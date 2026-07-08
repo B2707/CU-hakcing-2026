@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# task — deterministic backend for the team commands.
+#
+#   task doctor              seat health: auth, versions, config parity, hooks
+#   task start <issue#>      take an issue: worktree + branch + brief + memory
+#   task ship                rebase, verify (build/test/secrets), PR (draft if red)
+#   task gotcha <text...>    record a lesson candidate (quarantined, rides the PR)
+#   task propose <title...>  file a quarantined idea issue (label: proposed)
+#
+# Commands stay thin; this script is the single source of behavior so every
+# seat gets identical mechanics from a plain clone.
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --path-format=absolute --git-common-dir | xargs dirname)"
+WT_DIR="$REPO_ROOT/.task/worktrees"
+CTX="$REPO_ROOT/data/context"
+SEAT="${TEAM_SEAT:-$(git config user.name 2>/dev/null | tr ' [:upper:]' '-[:lower:]' || echo seat)}"
+
+say()  { printf '%s\n' "$*"; }
+pass() { printf 'PASS  %s\n' "$*"; }
+fail() { printf 'FAIL  %s\n' "$*"; FAILED=1; }
+warn() { printf 'WARN  %s\n' "$*"; }
+
+cmd_doctor() {
+  FAILED=0
+  say "== doctor: seat $SEAT =="
+  git ls-remote -q origin HEAD >/dev/null 2>&1 && pass "origin reachable" || fail "origin unreachable"
+  gh auth status >/dev/null 2>&1 && pass "gh authenticated" || fail "gh not authenticated (run: gh auth login)"
+  command -v node >/dev/null 2>&1 && pass "node $(node --version)" || warn "node missing (needed once stack is stamped)"
+  [ -f "$REPO_ROOT/.claude/settings.json" ] && pass "hooks config present" || fail "hooks config missing (.claude/settings.json)"
+  # Parity: committed config must match origin/main (stamp-once-commit-everywhere)
+  git fetch -q origin main
+  if git diff --quiet origin/main -- "$REPO_ROOT/.claude" "$REPO_ROOT/scripts" 2>/dev/null; then
+    pass "config parity with origin/main"
+  else
+    fail "config drift vs origin/main — run: git pull (never edit .claude/ locally)"
+  fi
+  local skills=0
+  [ -d "$REPO_ROOT/.claude/skills" ] && skills=$(find "$REPO_ROOT/.claude/skills" -name SKILL.md | wc -l | tr -d ' ')
+  say "INFO  skills loaded: $skills"
+  [ -n "${TEAM_HEARTBEAT_SECRET:-}" ] && pass "heartbeat secret in env" || warn "TEAM_HEARTBEAT_SECRET not set (console features off until D3)"
+  if [ "${FAILED:-0}" -eq 1 ]; then say "== doctor: NOT READY =="; exit 1; fi
+  say "== doctor: READY =="
+}
+
+cmd_start() {
+  local n="${1:?usage: task start <issue#>}"
+  git fetch -q origin main
+  # Clean up worktrees whose branches already merged (absorbs old `done`)
+  if [ -d "$WT_DIR" ]; then
+    for wt in "$WT_DIR"/issue-*; do
+      [ -d "$wt" ] || continue
+      local br
+      br=$(git -C "$wt" branch --show-current 2>/dev/null || true)
+      if [ -n "$br" ] && git merge-base --is-ancestor "$br" origin/main 2>/dev/null; then
+        git worktree remove --force "$wt" && say "cleaned merged worktree: $(basename "$wt")"
+      fi
+    done
+  fi
+  local br="task/$n-$SEAT" wt="$WT_DIR/issue-$n"
+  [ -d "$wt" ] && { say "worktree already exists: $wt"; exit 1; }
+  git worktree add -q "$wt" -b "$br" origin/main
+  gh issue edit "$n" --add-assignee "@me" >/dev/null 2>&1 || warn "could not self-assign issue #$n"
+  say ""
+  say "== TASK BRIEF (issue #$n) =="
+  gh issue view "$n" || true
+  say ""
+  say "== TEAM GOTCHAS (acked) =="
+  cat "$CTX/gotchas.md" 2>/dev/null || say "(none yet)"
+  say ""
+  say "== INSTINCTS =="
+  cat "$CTX/instincts.md" 2>/dev/null || say "(none yet)"
+  say ""
+  say "== worktree ready: $wt (branch $br) =="
+  say "cd $wt"
+}
+
+cmd_ship() {
+  local br; br=$(git branch --show-current)
+  case "$br" in task/*) ;; *) say "ship runs from a task/* worktree (current: $br)"; exit 1;; esac
+  git fetch -q origin main
+  git rebase -q origin/main || { say "REBASE CONFLICT — resolve, then rerun task ship"; exit 1; }
+  local build="skip" test="skip" secrets="clean" verdict="green"
+  if [ -f package.json ]; then
+    if node -e "process.exit(require('./package.json').scripts?.build?0:1)" 2>/dev/null; then
+      npm run build --silent >/dev/null 2>&1 && build="pass" || { build="FAIL"; verdict="red"; }
+    fi
+    if node -e "process.exit(require('./package.json').scripts?.test?0:1)" 2>/dev/null; then
+      npm test --silent >/dev/null 2>&1 && test="pass" || { test="FAIL"; verdict="red"; }
+    fi
+  fi
+  if git diff origin/main --name-only -- . ':!.env.example' | xargs grep -lIE '(api[_-]?key|secret|token|password)\s*[:=]\s*["'"'"'][A-Za-z0-9_\-]{16,}' 2>/dev/null; then
+    secrets="SUSPECT (see files above)"; verdict="red"
+  fi
+  git push -q -u origin "$br"
+  local body="## Verification
+- build: $build
+- tests: $test
+- secret scan: $secrets
+- rebased on origin/main: yes"
+  if [ "$verdict" = "green" ]; then
+    gh pr create --fill --body "$body" 2>/dev/null || gh pr edit --body "$body"
+    say "== shipped GREEN: PR open, bot review next =="
+  else
+    gh pr create --fill --draft --body "$body" 2>/dev/null || gh pr edit --body "$body"
+    say "== shipped RED: DRAFT PR only (fix build/tests/secrets, rerun) =="
+  fi
+}
+
+cmd_gotcha() {
+  local text="${*:?usage: task gotcha <what you learned>}"
+  mkdir -p "$CTX/gotcha-candidates"
+  local f="$CTX/gotcha-candidates/$SEAT-$(date +%s).md"
+  printf -- '- %s  _(seat: %s, %s)_\n' "$text" "$SEAT" "$(date '+%m-%d %H:%M')" > "$f"
+  git add "$f"
+  git commit -q -m "gotcha: candidate from $SEAT" -- "$f" 2>/dev/null || true
+  say "gotcha recorded (quarantined; rides this branch's PR): $f"
+}
+
+cmd_propose() {
+  local title="${*:?usage: task propose <idea title>}"
+  local url
+  url=$(gh issue create --title "$title" --label proposed --body "Proposed by seat $SEAT via /propose. Quarantined — FM triages at next checkpoint. Not dispatchable until promoted to ready.")
+  say "proposed (quarantined): $url"
+}
+
+sub="${1:?usage: task <doctor|start|ship|gotcha|propose> ...}"; shift || true
+case "$sub" in
+  doctor)  cmd_doctor "$@" ;;
+  start)   cmd_start "$@" ;;
+  ship)    cmd_ship "$@" ;;
+  gotcha)  cmd_gotcha "$@" ;;
+  propose) cmd_propose "$@" ;;
+  *) say "unknown subcommand: $sub"; exit 1 ;;
+esac
