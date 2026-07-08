@@ -22,6 +22,9 @@ Teammate seats run ONE hot agent terminal + one plain shell. Model floor: Sonnet
 - `/gotcha` — record a lesson (quarantined candidate; FM promotes).
 - `/propose` — file an idea (quarantined issue; FM triages).
 
+Pitch track (sjp owns): `/pitch` builds the deck + demo script; `/judge-sim`
+stress-tests it against the rubric and is required before submission.
+
 ## Hard rules (enforced by hooks and the server; violations bounce)
 
 1. NEVER push to main. No exceptions — not even the manager. PRs only.
