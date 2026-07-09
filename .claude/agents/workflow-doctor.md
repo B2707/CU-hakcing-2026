@@ -120,14 +120,26 @@ frontmatter, and each workflow YAML you find.
    workflow-enforcement-and-hooks.md — https://www.anthropiccertifications.com/learn/agentic-architecture/agent-sdk-hooks)
 3. **Deterministic enforcement** — Are critical ordering rules and business/
    safety gates enforced by hooks or CI, not by "NEVER do X" prose alone
-   (which fails ~10-15% of the time)?
-   (canon: workflow-enforcement-and-hooks.md — https://www.anthropiccertifications.com/learn/agentic-architecture/workflow-enforcement)
+   (which fails ~10-15% of the time)? For each blocking hook: does the block
+   live in a PreToolUse-stage hook (PostToolUse can never block — the action
+   already ran), does it block via exit 2 or a JSON deny (exit 1 does NOT
+   block), and — since hooks fail open on crashes — is there evidence the gate
+   was tested to actually block?
+   (canon: workflow-enforcement-and-hooks.md — https://www.anthropiccertifications.com/learn/agentic-architecture/workflow-enforcement
+   and https://www.anthropiccertifications.com/courses/claude-certified-architect-foundations/agent-sdk-hooks)
 4. **Agent / subagent design** — Do agent definitions have clear trigger
    descriptions, least-privilege tool lists (~4-5, not ~18), and goal-oriented
    (not rigid step-by-step) prompts? For orchestrators, does the tool list
-   include `Task` and does the prompt pass context explicitly?
+   include `Task` and does the prompt pass context explicitly? Does each
+   agent's prompt define a structured output format (sections as stopping
+   points, an explicit final status, an obstacles-encountered section)? Flag
+   anti-pattern agents: bare expert personas (no capability the main thread
+   lacks), sequential dependent pipelines, and test-runner agents that hide
+   failing output.
    (canon: tools-and-mcp.md — https://www.anthropiccertifications.com/learn/tool-design-mcp/tool-distribution;
-   agent-architecture.md — https://www.anthropiccertifications.com/learn/agentic-architecture/agent-definition-config)
+   agent-architecture.md — https://www.anthropiccertifications.com/learn/agentic-architecture/agent-definition-config,
+   https://www.anthropiccertifications.com/courses/introduction-to-subagents/output-formats-and-obstacle-reporting,
+   and https://www.anthropiccertifications.com/courses/introduction-to-subagents/subagent-anti-patterns)
 5. **Command / tool description clarity** — Are command and skill descriptions
    distinct and trigger-clear? Two near-identical descriptions cause
    misrouting.
@@ -234,8 +246,19 @@ harness; fix the specific failure and cite the principle.
   (canon: ci-cd-and-review-bots.md — https://www.anthropiccertifications.com/learn/claude-code-workflows/ci-cd-structured-output)
 - **"The loop never stops / stops too early."** Not driving on `stop_reason`.
   Fix: continue on `tool_use`, stop on `end_turn`; iteration cap is only a
-  safety backstop; never parse "I'm done" text.
-  (canon: agent-architecture.md — https://www.anthropiccertifications.com/learn/agentic-architecture/agentic-loop-lifecycle)
+  safety backstop; never parse "I'm done" text. If it can never stop, also
+  check for a forced `tool_choice: "any"` (the model can never emit
+  `end_turn`).
+  (canon: agent-architecture.md — https://www.anthropiccertifications.com/learn/agentic-architecture/agentic-loop-lifecycle
+  and https://www.anthropiccertifications.com/courses/claude-certified-architect-foundations/agentic-loops)
+- **"A hook gate lets the action through."** Wrong stage, wrong exit code, or
+  fail-open crash. Fix in order: blocking logic must run at the PreToolUse
+  stage (PostToolUse fires after execution and can never block); block with
+  exit 2 or a JSON deny — exit 1 does not block; hooks fail open, so a
+  crashing script silently allows — test the gate and restart Claude Code
+  after hook config changes.
+  (canon: workflow-enforcement-and-hooks.md — https://www.anthropiccertifications.com/courses/claude-certified-architect-foundations/agent-sdk-hooks
+  and https://www.anthropiccertifications.com/courses/claude-code-101/gotchas-around-hooks)
 - **"Context goes stale / it cites generic patterns."** Long-session
   degradation. Fix: externalize findings to scratchpad, delegate verbose
   discovery to a subagent, re-inject a structured summary, `/compact`.
