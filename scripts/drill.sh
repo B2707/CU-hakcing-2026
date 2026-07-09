@@ -1,48 +1,68 @@
 #!/usr/bin/env bash
 # drill.sh — scripted tripwire fires (D4 deterministic drill, audit C2).
 # Dispatches every tripwire through the REAL Discord alert path with a
-# [DRILL] prefix, then verifies all workflow runs completed. The binary
-# checkpoint is human: #ops must show exactly 3 [DRILL][P0] lines
-# (red-main, panic, demo-freeze) and #feed exactly 5 [DRILL][P1] lines
-# (stuck-pr, stale-claim, collision, deadlock, budget). Anything else =
-# wiring broken; fix before the D5 team drill.
+# [DRILL] prefix — SERIALLY. tripwires.yml serializes all runs on a shared
+# concurrency group (`group: tripwires`), so parallel dispatch makes GitHub
+# auto-cancel every queued run except the newest (observed: 3/8 success,
+# 5 cancelled). Each wire therefore waits for its run to complete before
+# the next fires. The binary checkpoint is human: #ops must show exactly
+# 3 [DRILL][P0] lines (red-main, panic, demo-freeze) and #feed exactly 5
+# [DRILL][P1] lines (stuck-pr, stale-claim, collision, deadlock, budget).
+# Anything else = wiring broken; fix before the D5 team drill.
 #
 # Usage: scripts/drill.sh <owner/repo>
-# Run once, freshly — verification reads the newest 8 dispatch runs.
 set -euo pipefail
 
 REPO="${1:?usage: drill.sh <owner/repo>}"
 WIRES=(red-main stuck-pr stale-claim panic collision deadlock budget demo-freeze)
-TIMEOUT_S=300
+REGISTER_TIMEOUT_S=45   # per wire: dispatch -> run visible in the API
+RUN_TIMEOUT_S=180       # per wire: run visible -> completed
 
-echo "==> dispatching ${#WIRES[@]} drill fires on $REPO"
+latest_run_id() {
+  gh run list --repo "$REPO" --workflow tripwires.yml \
+    --event workflow_dispatch --limit 1 \
+    --json databaseId --jq '.[0].databaseId // 0'
+}
+
+echo "==> dispatching ${#WIRES[@]} drill fires on $REPO (serial — see header)"
+pass=0
+results=()
 for wire in "${WIRES[@]}"; do
+  before=$(latest_run_id)
   gh workflow run tripwires.yml --repo "$REPO" -f simulate="$wire"
   echo "    fired: $wire"
-done
 
-echo "==> waiting for runs to register and complete (max ${TIMEOUT_S}s)"
-sleep 15
-deadline=$((SECONDS + TIMEOUT_S))
-while :; do
-  completed=$(gh run list --repo "$REPO" --workflow tripwires.yml \
-    --event workflow_dispatch --limit "${#WIRES[@]}" \
-    --json status --jq '[.[] | select(.status == "completed")] | length')
-  echo "    completed: $completed/${#WIRES[@]}"
-  [ "$completed" -ge "${#WIRES[@]}" ] && break
-  if [ "$SECONDS" -gt "$deadline" ]; then
-    echo "FAIL: drill runs did not complete within ${TIMEOUT_S}s" >&2
-    exit 1
+  # wait for the new run to register
+  run_id=""
+  deadline=$((SECONDS + REGISTER_TIMEOUT_S))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 3
+    cur=$(latest_run_id)
+    if [ "$cur" != "$before" ] && [ "$cur" != "0" ]; then run_id="$cur"; break; fi
+  done
+  if [ -z "$run_id" ]; then
+    results+=("$wire: NO RUN REGISTERED")
+    continue
   fi
-  sleep 10
+
+  # wait for that run to complete
+  conclusion=""
+  deadline=$((SECONDS + RUN_TIMEOUT_S))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    line=$(gh run view "$run_id" --repo "$REPO" --json status,conclusion \
+      --jq '.status + " " + (.conclusion // "")')
+    if [ "${line%% *}" = "completed" ]; then conclusion="${line#* }"; break; fi
+    sleep 5
+  done
+  [ "$conclusion" = "success" ] && pass=$((pass + 1))
+  results+=("$wire: ${conclusion:-timeout} (run $run_id)")
 done
 
-successes=$(gh run list --repo "$REPO" --workflow tripwires.yml \
-  --event workflow_dispatch --limit "${#WIRES[@]}" \
-  --json conclusion --jq '[.[] | select(.conclusion == "success")] | length')
+echo "==> results"
+printf '    %s\n' "${results[@]}"
 
-if [ "$successes" -ne "${#WIRES[@]}" ]; then
-  echo "FAIL: $successes/${#WIRES[@]} drill runs succeeded — inspect: gh run list --workflow tripwires.yml --repo $REPO" >&2
+if [ "$pass" -ne "${#WIRES[@]}" ]; then
+  echo "FAIL: $pass/${#WIRES[@]} drill runs succeeded — inspect: gh run list --workflow tripwires.yml --repo $REPO" >&2
   exit 1
 fi
 
