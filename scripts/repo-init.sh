@@ -76,8 +76,14 @@ RULESET_JSON=$(cat <<'JSON'
 JSON
 )
 if [ -n "$EXISTING_ID" ]; then
-  echo "$RULESET_JSON" | gh api --method PUT "repos/$REPO/rulesets/$EXISTING_ID" --input - >/dev/null
-  echo "    updated existing ruleset ($EXISTING_ID)"
+  # Preserve any required_status_checks rule added later (enable-bot-gate.sh)
+  # — a plain PUT of the base JSON silently clobbers it (observed live:
+  # re-running repo-init dropped review/tests-touched from the merge gate).
+  MERGED=$(gh api "repos/$REPO/rulesets/$EXISTING_ID" \
+    | jq --argjson base "$RULESET_JSON" \
+      '$base + {rules: ($base.rules + [.rules[]? | select(.type=="required_status_checks")])}')
+  echo "$MERGED" | gh api --method PUT "repos/$REPO/rulesets/$EXISTING_ID" --input - >/dev/null
+  echo "    updated existing ruleset ($EXISTING_ID) — required checks preserved"
 else
   echo "$RULESET_JSON" | gh api --method POST "repos/$REPO/rulesets" --input - >/dev/null
   echo "    created"
@@ -120,16 +126,24 @@ if [ -n "$WEBHOOK_URL" ]; then
     echo "ERROR: --webhook-url requires TEAM_HEARTBEAT_SECRET in env (HMAC secret)" >&2
     exit 1
   fi
+  command -v jq >/dev/null || { echo "ERROR: jq required for webhook registration" >&2; exit 1; }
   echo "==> webhook: $WEBHOOK_URL"
-  gh api --method POST "repos/$REPO/hooks" \
-    -f name=web \
-    -F active=true \
-    -f 'events[]=issues' -f 'events[]=pull_request' -f 'events[]=push' \
-    -f 'events[]=label' -f 'events[]=issue_comment' -f 'events[]=workflow_run' \
-    -f config.url="$WEBHOOK_URL" \
-    -f config.content_type=json \
-    -f config.secret="$TEAM_HEARTBEAT_SECRET" >/dev/null
-  echo "    registered"
+  # Idempotent: skip if a hook already points at this URL (re-runs must not
+  # stack duplicate hooks — every event would fan out N times).
+  EXISTING_HOOKS=$(gh api "repos/$REPO/hooks" \
+    --jq "[.[] | select(.config.url == \"$WEBHOOK_URL\")] | length" 2>/dev/null || echo 0)
+  if [ "${EXISTING_HOOKS:-0}" -gt 0 ]; then
+    echo "    already registered — skipped"
+  else
+    # NB: gh api -f/-F flag encoding 422s on this endpoint (mixed array/
+    # boolean/nested keys) — build the payload as explicit JSON instead.
+    jq -n --arg url "$WEBHOOK_URL" --arg secret "$TEAM_HEARTBEAT_SECRET" \
+      '{name:"web", active:true,
+        events:["issues","pull_request","push","label","issue_comment","workflow_run"],
+        config:{url:$url, content_type:"json", secret:$secret}}' \
+      | gh api --method POST "repos/$REPO/hooks" --input - >/dev/null
+    echo "    registered"
+  fi
 else
   echo "==> webhook: skipped (no --webhook-url; add at D3 when the console deploys)"
 fi

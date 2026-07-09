@@ -4,3 +4,7 @@
      candidates quarantine in gotcha-candidates/ and ride their branch's PR;
      the FM acks the real ones into this file. Loaded by /start on every
      seat: keep entries ONE line each, newest on top. -->
+
+- Re-running `repo-init.sh` PUTs the base ruleset and silently DROPS the required `review`/`tests-touched` merge checks — fixed to merge-preserve, but after any ruleset edit verify with: `gh api repos/<r>/rulesets/<id> --jq '[.rules[]|select(.type=="required_status_checks")]'`
+- `drill.sh` must fire wires SERIALLY — tripwires.yml shares one concurrency group; parallel dispatch gets all but the newest queued run auto-cancelled (looks like 5/8 mystery failures)
+- `gh api -f/-F` flag encoding 422s on `POST /repos/…/hooks` — build webhook payloads as explicit JSON (`jq -n … | gh api --input -`)
