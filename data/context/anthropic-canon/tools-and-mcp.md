@@ -41,6 +41,7 @@ distribution, structured errors, and MCP server config.
 
 ## MCP server config & scoping
 
+- MCP vs tool use: tool use is HOW the model calls a tool (the request/response mechanics); MCP is WHO supplies the tools — a server provides ready-made schemas and implementations, discovered at runtime via `tools/list`, maintained by the provider. It turns the M×N custom-integration problem (every app × every system) into M+N; it standardizes the layer on top of APIs, it does not replace them (https://www.anthropiccertifications.com/courses/introduction-to-mcp/what-is-mcp).
 - Scoping: project-level `.mcp.json` for shared, version-controlled team tooling; user-level `~/.claude.json` (`claude mcp add --scope user`) for personal/experimental servers (https://www.anthropiccertifications.com/learn/tool-design-mcp/mcp-server-integration).
 - Project `.mcp.json` uses an `mcpServers` map; each server has `command`, `args`, and an `env` block. Use env-var expansion like `${GITHUB_TOKEN}` in `env` to keep secrets out of version control while sharing one config; never commit secrets (https://www.anthropiccertifications.com/learn/tool-design-mcp/mcp-server-integration).
 - Tools from all configured servers are discovered at connection time and available simultaneously (https://www.anthropiccertifications.com/learn/tool-design-mcp/mcp-server-integration).
