@@ -118,7 +118,7 @@ async function checkPrs(github, repo) {
       if (reviewPending && ageMin > THRESHOLDS.botStaleMin) {
         found.push({
           wire: 'stuck-pr',
-          detail: `gate-health: review check ${review ? review.status : 'MISSING'} on PR #${pr.number} for ${Math.round(ageMin)}m — bot may be down (deputy break-glass if urgent). ${pr.html_url}`,
+          detail: `gate-health: review check ${review ? review.status : 'MISSING'} on PR #${pr.number} for ${Math.round(ageMin)}m — bot may be down (any seat can break-glass if urgent). ${pr.html_url}`,
         });
         continue;
       }
