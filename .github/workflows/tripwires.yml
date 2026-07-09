@@ -35,7 +35,9 @@ jobs:
         env:
           DISCORD_WEBHOOK_OPS: ${{ secrets.DISCORD_WEBHOOK_OPS }}
           DISCORD_WEBHOOK_FEED: ${{ secrets.DISCORD_WEBHOOK_FEED }}
+          TEAM_HEARTBEAT_SECRET: ${{ secrets.TEAM_HEARTBEAT_SECRET }}
           DEMO_FREEZE_AT: ${{ vars.DEMO_FREEZE_AT }}
+          CONSOLE_ALERT_URL: ${{ vars.CONSOLE_ALERT_URL }}
           SIMULATE: ${{ inputs.simulate }}
         with:
           script: |

@@ -59,6 +59,29 @@ async function sendDiscord(core, webhookUrl, text) {
   }
 }
 
+// Best-effort mirror of an alert to the console wall (POST /api/alert). Only
+// fires when CONSOLE_ALERT_URL is configured, and is fully self-contained:
+// every failure is downgraded to a core.warning so it can NEVER throw, block
+// the Discord path, or fail the tripwire run. Auth reuses the shared team
+// secret (same header the console's heartbeat/alert routes expect).
+async function sendConsole(core, severity, wire, detail) {
+  const url = process.env.CONSOLE_ALERT_URL || '';
+  if (!url) return; // console mirror not configured — Discord path already ran
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-team-secret': process.env.TEAM_HEARTBEAT_SECRET || '',
+      },
+      body: JSON.stringify({ severity, wire, detail }),
+    });
+    if (!res.ok) core.warning(`console alert POST failed: ${res.status}`);
+  } catch (err) {
+    core.warning(`console alert POST failed: ${err.message}`);
+  }
+}
+
 function makeAlerter(core) {
   const ops = process.env.DISCORD_WEBHOOK_OPS || '';
   const feed = process.env.DISCORD_WEBHOOK_FEED || '';
@@ -71,6 +94,11 @@ function makeAlerter(core) {
     const url = severity === 'P0' ? ops || feed : feed || ops;
     core.notice(text);
     await sendDiscord(core, url, text);
+    // Also surface the alert on the console wall AFTER the Discord send. This is
+    // best-effort and fail-open — sendConsole swallows every error — so it can
+    // never disturb the Discord path. Drill fires ride along too, carrying the
+    // same [DRILL] prefix in the detail so they read as drills on the wall.
+    await sendConsole(core, severity, wire, prefix ? `${prefix} ${detail}` : detail);
   };
 }
 
