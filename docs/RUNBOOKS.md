@@ -10,9 +10,9 @@ Claude-heavy days land Wed–Fri (manager's weekly window resets Saturday).
 | D0 | Wed Jul 8 | Repos + protection canary + roles + rules check | 2 | MUST — ✅ done |
 | D1 | Wed–Thu | Kernel, task script, 5 commands, memory bank, docs, hooks, judge-sim + submission-prep skills | 8 | MUST |
 | D2 | Fri Jul 10 | Review bot (OAuth, hello-world verify), CI tests-touched, ruleset status check; gotcha-bot promote flow (timebox 2h), auto-unblock Action | 7 | MUST (bot+CI) / SHOULD (rest) |
-| D3 | Sat Jul 11 | Console core: health strip + kanban + ticker, authed GET, lazy reconcile; Upstash provisioning; deputy Vercel access | 6 | MUST (core) / COULD (burn+demo tiles) |
+| D3 | Sat Jul 11 | Console core: health strip + kanban + ticker, authed GET, lazy reconcile; Upstash provisioning | 6 | MUST (core) / COULD (burn+demo tiles) |
 | D4 | Sun Jul 12 | Tripwires P0 wires + Discord + drill.sh (8/8 fires), stack-stamp dry-run vs dummy repo, /pitch wrapper + knowledge distill | 6 | SHOULD (P0 wires ≈ must) |
-| D5 | Mon Jul 13 | 90-min team drill (deputy break-glass, Bader-gone P0, instantiation rehearsal, DAY0 dry-run) + fallout fixes + freeze | 4 | MUST |
+| D5 | Mon Jul 13 | 90-min team drill (any-seat break-glass, Bader-gone P0, instantiation rehearsal, DAY0 dry-run) + fallout fixes + freeze | 4 | MUST |
 
 **Cut order when hours vanish** (rightmost dies first):
 review-bot → gotcha-bot promote flow → health strip → P0 tripwires ▮ CUT LINE ▮

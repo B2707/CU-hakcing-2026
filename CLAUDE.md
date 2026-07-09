@@ -8,8 +8,8 @@ then escalate through the channels below.
 
 - **Bader** — manager: First Mate dispatcher (T1), orchestrator (T2), triage
   (T3), night batch (T4), ops shell (T5). Escalations end at Bader.
-- **sjp** — teammate lane; currently holds the **deputy + demo owner** roles
-  (final call on demo freeze + submission). Roles are reassignable — the
+- **sjp** — teammate lane; currently holds the **demo owner** role
+  (final call on demo freeze + submission). The role is reassignable — the
   role matters, not the name.
 - **Amr**, **Adham** — teammate lanes.
 
