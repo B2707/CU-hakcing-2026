@@ -12,7 +12,7 @@ then escalate through the channels below.
 - **sjp** — teammate lane; currently holds the **demo owner** role
   (final call on demo freeze + submission). The role is reassignable — the
   role matters, not the name.
-- **Amr**, **Adham** — teammate lanes.
+- **Amr**, **Mohammad** — teammate lanes.
 
 Teammate seats run ONE hot agent terminal + one plain shell. Model floor: Sonnet.
 

@@ -12,7 +12,7 @@
 ```bash
 git clone git@github.com:B2707/<repo>.git && cd <repo>
 cp .env.example .env        # fill values Bader sends you — never commit .env
-export TEAM_SEAT=<yourname> # sjp / amr / adham (add to your shell profile)
+export TEAM_SEAT=<yourname> # sjp / amr / mohammad (add to your shell profile)
 claude
 ```
 
