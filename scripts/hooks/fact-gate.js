@@ -37,7 +37,7 @@ function main(input) {
   const relPath = projectDir && filePath.startsWith(projectDir)
     ? path.relative(projectDir, filePath) : '';
   const seat = String(process.env.TEAM_SEAT || '').toLowerCase();
-  if (ONE_WRITER.includes(relPath) && seat !== 'bader' && seat !== 'manager') {
+  if (ONE_WRITER.includes(relPath) && seat !== 'bader' && seat !== 'manager' && seat !== 'b2707') {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',

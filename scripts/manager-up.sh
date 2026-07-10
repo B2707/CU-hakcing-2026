@@ -28,7 +28,7 @@ command -v tmux >/dev/null 2>&1 || { echo "tmux not installed — run: brew inst
 REPO="$(cd "$REPO" && pwd)"
 [ -x "$REPO/scripts/task" ] || { echo "not the team repo (no scripts/task): $REPO — pass the repo path"; exit 1; }
 SESSION="${2:-hq-$(basename "$REPO")}"
-SEAT="export TEAM_SEAT=bader"   # /fm's manager-seat guard needs this in EVERY pane
+SEAT="export TEAM_SEAT=B2707"   # /fm's manager-seat guard needs this in EVERY pane
 
 attach() { if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$SESSION"; else exec tmux attach -t "$SESSION"; fi; }
 

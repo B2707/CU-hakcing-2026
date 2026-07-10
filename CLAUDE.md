@@ -9,10 +9,10 @@ then escalate through the channels below.
 - **Bader** — manager, 3 seats: **First Mate / River** (autonomous triage,
   dispatch + overnight build-to-queue — see "First Mate (River)" below),
   **orchestrator** (planning + `/consensus`), **ops shell**. Escalations end at Bader.
-- **sjp** — teammate lane; currently holds the **demo owner** role
+- **MohammadESteitieh** — teammate lane; currently holds the **demo owner** role
   (final call on demo freeze + submission). The role is reassignable — the
   role matters, not the name.
-- **Amr**, **Mohammad** — teammate lanes.
+- **Amrooosh**, **saidel04** — teammate lanes. (Seats are GitHub usernames — TEAM_SEAT = yours.)
 
 Teammate seats run ONE hot agent terminal + one plain shell. Model floor: Sonnet.
 

@@ -44,7 +44,7 @@ reusing this repo's `/consensus`, `scripts/task`, tripwires, and review bot.
 TMP="$(mktemp -d)"
 : "${TEAM_SEAT:=$(git config user.name | tr ' [:upper:]' '-[:lower:]')}"
 case "${FM_MANAGER:-$TEAM_SEAT}" in
-  bader|manager) ;;
+  bader|manager|B2707|b2707) ;;
   *) echo "STOP: /fm is the First Mate (manager) seat only — TEAM_SEAT=$TEAM_SEAT. Override with FM_MANAGER=manager."; exit 1;;
 esac
 gh auth status >/dev/null 2>&1 || { echo "STOP: gh not authenticated (gh auth login)"; exit 1; }
