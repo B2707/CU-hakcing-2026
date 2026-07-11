@@ -109,8 +109,8 @@ re-nag every pass while the condition persists — silence means fixed.
 
 ## First Mate / River loop (the manager's autonomous seat)
 
-`/fm` on the First Mate pane is the standing loop (run it continuously with
-`/loop 10m /fm`). Each tick: senses the board → triages candidates/proposals →
+`/fm` on the First Mate pane is the standing loop (the cockpit runs it headless —
+`claude -p '/fm'` every 10 min in a plain shell, no interactive TUI to hijack). Each tick: senses the board → triages candidates/proposals →
 ships ready, fully-specified issues to **non-draft** PRs (`scripts/fm-build.sh`,
 headless codex, isolated worktrees) → labels green + bot-passed ones `queued-merge`
 → **auto-merges the policy-eligible ones** (`scripts/fm-merge.sh`, rules below) →
