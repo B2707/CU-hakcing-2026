@@ -4,7 +4,7 @@
 # Layout (main-vertical):
 #   ┌────────────────────────┬────────────────────────────┐
 #   │  🧭 ORCHESTRATOR       │  ⚓ FIRST MATE (River)      │
-#   │  (you work here)       │  auto-runs /loop 10m /fm   │
+#   │  (you work here)       │  headless /fm every 10m    │
 #   │  planning · /consensus ├────────────────────────────┤
 #   │                        │  🛠  OPS (plain shell)      │
 #   └────────────────────────┴────────────────────────────┘
@@ -57,11 +57,13 @@ tmux new-session -d -s "$SESSION" -n hq -c "$REPO"
 tmux send-keys -t "$SESSION:hq.0" \
   "$SEAT; clear; printf '🧭 ORCHESTRATOR — planning (codex disabled — /fm builds on claude)\n\n'; claude --model opus --dangerously-skip-permissions" C-m
 
-# Pane 1 — First Mate (River): AUTO-STARTS the loop. First-ever run on a fresh
-# clone: approve the folder-trust prompt once, then the loop flows.
+# Pane 1 — First Mate (River): HEADLESS loop — `claude -p '/fm'` every 10 min in a
+# plain shell. No interactive TUI: fleet-view notifications can't steal the pane
+# (they hijacked it twice on 2026-07-10), and /fm is restart-proof (state on disk).
+# Stop: Ctrl-C in the pane. Morning ack: run `/fm ack` from the Orchestrator pane.
 tmux split-window -h -t "$SESSION:hq" -c "$REPO"
 tmux send-keys -t "$SESSION:hq.1" \
-  "$SEAT; clear; printf '⚓ FIRST MATE (River) — auto /loop 10m /fm · morning: /fm ack · pause: touch data/context/fm/PAUSE\n\n'; claude --model opus --dangerously-skip-permissions '/loop 10m /fm'" C-m
+  "$SEAT; clear; printf '⚓ FIRST MATE (River) — HEADLESS /fm loop · 10m ticks · codex-free · Ctrl-C stops\n\n'; while :; do echo \"════ /fm tick \$(date '+%H:%M:%S') ════\"; claude --model opus --dangerously-skip-permissions -p '/fm' 2>&1; echo \"──── tick done \$(date '+%H:%M:%S') · next in 10m ────\"; sleep 600; done" C-m
 
 # Pane 2 — Ops: plain shell (git, gh, drills, tripwire kicker) — NO agent.
 # Also starts the manager presence beat (console seat panel) in the background.
