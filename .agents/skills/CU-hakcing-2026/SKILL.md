@@ -1,4 +1,7 @@
-```markdown
+---
+name: CU-hakcing-2026
+description: Development conventions and workflows for the CU-hakcing-2026 TypeScript codebase — file naming, import/export style, commit message format, and testing patterns.
+---
 # CU-hakcing-2026 Development Patterns
 
 > Auto-generated skill from repository analysis
@@ -79,4 +82,3 @@ describe('getUserProfile', () => {
 |----------------|-------------------------------------------|
 | /feature-dev   | Start a new feature development workflow   |
 | /run-tests     | Run the test suite for the codebase       |
-```
