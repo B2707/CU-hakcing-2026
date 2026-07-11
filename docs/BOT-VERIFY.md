@@ -1,3 +1,3 @@
-# Bot verification
+# Bot gate verify
 
-Review bot hello-world verify — opened 2026-07-08 per docs/RUNBOOKS.md "Bring the review bot online" step 3.
+Hour-zero hello-world PR — proves bot + checks, then break-glass, then closed.
