@@ -16,3 +16,8 @@ data/context/fm/merge.lock/
 
 __pycache__/
 *.py[cod]
+
+# Receiver local runtime
+.venv/
+receiver/.venv/
+captures/

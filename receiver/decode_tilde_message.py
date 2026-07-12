@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Decode an 8 Hz OOK/Manchester message using a complex tilde preamble template.
+"""Offline decode of a captured ``t,x,y`` CSV to a Rocko beacon frame.
 
-Pipeline:
-  1. Butterworth bandpass around the carrier.
-  2. Hilbert transform to obtain a complex analytic signal.
-  3. Normalized complex correlation with a Manchester '~' template.
-  4. Decode subsequent bits by naive-max correlation against Manchester 0/1.
+Thin command-line front end over :mod:`decoder`. The frame layout, timing, and
+Manchester mapping are fixed by the frozen contract in :mod:`protocol` — there
+are no ``--message-bits`` style knobs, because the air interface is not
+negotiable. Only the receiver-side DSP parameters (carrier, bandpass width) are
+exposed for tuning against a noisy capture.
+
+    python receiver/decode_tilde_message.py captures/trial.csv
+    python receiver/decode_tilde_message.py trial.csv --carrier 8 --bandwidth 2
 """
 
 import argparse
@@ -13,7 +16,9 @@ import csv
 from pathlib import Path
 
 import numpy as np
-from scipy import signal
+
+import decoder
+from protocol import BANDWIDTH_HZ, CARRIER_HZ
 
 
 def load_capture(path):
@@ -24,102 +29,38 @@ def load_capture(path):
     return data["t"][good], data["x"][good], data["y"][good]
 
 
-def manchester_levels(bits):
-    # Regular OOK Manchester: 0 -> OFF,ON and 1 -> ON,OFF.
-    return np.array([level for bit in bits
-                     for level in ((0, 1) if bit == 0 else (1, 0))], dtype=float)
-
-
-def complex_template(bits, half_samples, fs, carrier):
-    gate = np.repeat(manchester_levels(bits), half_samples)
-    time = np.arange(len(gate)) / fs
-    return gate * np.exp(2j * np.pi * carrier * time)
-
-
-def normalized_sliding_correlation(z, template):
-    correlation = signal.fftconvolve(z, np.conj(template[::-1]), mode="valid")
-    cumulative_energy = np.concatenate(([0.0], np.cumsum(np.abs(z) ** 2)))
-    window_energy = cumulative_energy[len(template):] - cumulative_energy[:-len(template)]
-    template_energy = np.vdot(template, template).real
-    return np.abs(correlation) ** 2 / (template_energy * window_energy + 1e-15)
-
-
-def template_score(channels, start, template):
-    stop = start + len(template)
-    template_energy = np.vdot(template, template).real
-    score = 0.0
-    for z in channels:
-        segment = z[start:stop]
-        segment_energy = np.vdot(segment, segment).real
-        score += np.abs(np.vdot(template, segment)) ** 2 / (
-            template_energy * segment_energy + 1e-15)
-    return float(score)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv")
-    parser.add_argument("--carrier", type=float, default=8.0)
-    parser.add_argument("--bandwidth", type=float, default=2.0)
-    parser.add_argument("--half-rate", type=float, default=0.5)
-    parser.add_argument("--message-bits", type=int, default=16,
-                        help="total message length including tilde (default: 16)")
+    parser.add_argument("--carrier", type=float, default=CARRIER_HZ)
+    parser.add_argument("--bandwidth", type=float, default=BANDWIDTH_HZ)
     parser.add_argument("-o", "--output", help="optional per-bit score CSV")
     args = parser.parse_args()
 
     t, x, y = load_capture(args.csv)
-    fs = 1.0 / np.median(np.diff(t))
-    half_samples = round(fs / args.half_rate)
-    low, high = args.carrier - args.bandwidth / 2, args.carrier + args.bandwidth / 2
-    sos = signal.butter(4, [low, high], btype="bandpass", fs=fs, output="sos")
+    result = decoder.decode_repeats(t, x, y, carrier=args.carrier, bandwidth=args.bandwidth)
+    best = result.frames[0]
 
-    channels = []
-    for samples in (x, y):
-        filtered = signal.sosfiltfilt(sos, samples - np.median(samples))
-        channels.append(signal.hilbert(filtered))
-
-    preamble_bits = np.array([0, 1, 1, 1, 1, 1, 1, 0], dtype=np.int8)
-    preamble = complex_template(preamble_bits, half_samples, fs, args.carrier)
-
-    # Add normalized correlation power from both ADC channels. The magnitude
-    # removes unknown carrier phase while retaining coherent integration gain.
-    correlation = sum(normalized_sliding_correlation(z, preamble) for z in channels)
-    message_start = int(np.argmax(correlation))
-    peak = float(correlation[message_start])
-
-    zero_template = complex_template([0], half_samples, fs, args.carrier)
-    one_template = complex_template([1], half_samples, fs, args.carrier)
-
-    decoded = list(map(int, preamble_bits))
-    rows = []
-    bit_samples = 2 * half_samples
-    for bit_index in range(8, args.message_bits):
-        start = message_start + bit_index * bit_samples
-        if start + bit_samples > len(t):
-            raise ValueError(f"capture ends before bit {bit_index}")
-        score_zero = template_score(channels, start, zero_template)
-        score_one = template_score(channels, start, one_template)
-        bit = int(score_one > score_zero)  # naive max
-        decoded.append(bit)
-        rows.append({
-            "bit_index": bit_index,
-            "time_s": float(t[start]),
-            "score_0": score_zero,
-            "score_1": score_one,
-            "decoded_bit": bit,
-        })
-
-    binary = "".join(map(str, decoded))
-    print(f"Bandpass:       {low:g}-{high:g} Hz")
-    print(f"Sample rate:    {fs:.3f} Hz")
-    print(f"Message start:  sample {message_start}, t={t[message_start]:.6f} s")
-    print(f"Preamble score: {peak:.6f} (two-channel maximum is 2)")
-    for row in rows:
-        print(f"bit {row['bit_index']:2}: score0={row['score_0']:.6f} "
-              f"score1={row['score_1']:.6f} -> {row['decoded_bit']}")
-    print(f"Binary message: {binary}")
+    print(f"Sample rate:    {best.sample_rate:.3f} Hz")
+    print(f"Frames found:   {len(result.frames)} ({result.agreement})")
+    print(f"Message start:  sample {best.start_index}, t={best.start_time:.3f} s")
+    print(f"Preamble score: {best.preamble_score:.4f} (two-channel maximum is 2)")
+    for index, frame in enumerate(result.frames):
+        flags = "".join(map(str, frame.flag_bits))
+        print(f"  frame {index + 1}: {''.join(map(str, [0,1,1,1,1,1,1,0]))} {flags}"
+              f"  -> {frame.label} ({frame.code})  t={frame.start_time:.3f}s")
+    print(f"Decoded event:  {result.label} ({result.code})")
 
     if args.output:
+        rows = [
+            {
+                "flag_bit": index,
+                "score_0": scores[0],
+                "score_1": scores[1],
+                "decoded_bit": best.flag_bits[index],
+            }
+            for index, scores in enumerate(best.bit_scores)
+        ]
         output = Path(args.output)
         with output.open("w", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
