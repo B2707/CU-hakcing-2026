@@ -290,9 +290,13 @@ def decode_repeats(
     """
     t = np.asarray(t, dtype=float)
     fs = sample_rate_from_time(t)
+    frame_samples = FRAME_BITS * 2 * half_symbol_samples(fs)
+    if len(t) < frame_samples:
+        raise ValueError(
+            f"capture has {len(t)} samples; a complete frame requires {frame_samples}"
+        )
     channels = analytic_channels(x, y, fs, carrier, bandwidth)
     correlation = preamble_correlation(channels, fs, carrier)
-    frame_samples = FRAME_BITS * 2 * half_symbol_samples(fs)
 
     frames: List[DecodedFrame] = []
     for start in find_frame_starts(correlation, frame_samples, max_frames):
@@ -301,10 +305,7 @@ def decode_repeats(
         frames.append(_frame_at(channels, t, start, fs, carrier, float(correlation[start])))
 
     if not frames:
-        # Capture too short for a full frame; decode the strongest start anyway
-        # so the caller still gets a (best-effort) result instead of nothing.
-        start = int(np.argmax(correlation))
-        frames.append(_frame_at(channels, t, start, fs, carrier, float(correlation[start])))
+        raise ValueError("no complete frame follows any detected preamble peak")
 
     consensus = consensus_flags(frames)
     label, code = flags_to_event(consensus)

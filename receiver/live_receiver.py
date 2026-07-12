@@ -38,6 +38,8 @@ from protocol import (
     BANDWIDTH_HZ,
     CARRIER_HZ,
     DEFAULT_SAMPLE_RATE_HZ,
+    FRAME_BITS,
+    HALF_SYMBOL_SECONDS,
     HEARTBEAT_PERIOD_SECONDS,
     REPEAT_GAP_SECONDS,
 )
@@ -111,7 +113,14 @@ class LiveReceiver:
         self.envelope_alpha = 1 - np.exp(-1 / (args.sample_rate * 0.25))
 
         self.threshold = 0.0
+        self.noise_floor = 0.0
+        self.signal_high = 0.0
         self.separation = 0.0
+        self.current_amplitude = 0.0
+        self.tone_now = False
+        self.current_silence = 0.0
+        self.signal_trace = deque(maxlen=8)
+        self.next_signal_log_time = None
         self.tone_run = 0.0
         self.seen_tone = False
         self.signal_logged = False
@@ -263,12 +272,16 @@ class LiveReceiver:
         if len(history) < self.args.sample_rate:
             return
         floor, high = np.percentile(history, [10, 90])
+        self.noise_floor = float(floor)
+        self.signal_high = float(high)
         self.separation = high - floor
         self.threshold = floor + 0.30 * self.separation
+        self.current_amplitude = float(amplitudes[-1])
         detector_ready = high > max(floor * 3.0, floor + self.args.min_separation)
 
         for timestamp, amplitude in zip(times, amplitudes):
             tone = detector_ready and amplitude > self.threshold
+            self.tone_now = bool(tone)
             if tone:
                 self.tone_run += 1 / self.args.sample_rate
                 if self.tone_run >= self.args.tone_confirm:
@@ -281,15 +294,48 @@ class LiveReceiver:
             else:
                 self.tone_run = 0.0
 
+        if self.last_tone_time is not None:
+            self.current_silence = max(0.0, float(times[-1] - self.last_tone_time))
+        else:
+            self.current_silence = 0.0
+        self._append_signal_trace(float(times[-1]))
+
         if self.seen_tone and self.last_tone_time is not None:
-            silence = times[-1] - self.last_tone_time
+            silence = self.current_silence
             self.status_line = (
-                f"Tone captured — silence {max(0.0, silence):.1f}/{self.args.silence:g}s"
+                f"Tone captured — silence {silence:.1f}/{self.args.silence:g}s"
             )
             if silence >= self.args.silence and not self.decode_pending:
+                # A startup transient or short interference burst can satisfy the
+                # silence timer before a complete 12-bit frame exists. Defer the
+                # decoder rather than displaying that expected condition as an
+                # analyzer ERROR.
+                boundary = self.last_decode_time
+                if boundary is None and self.t:
+                    boundary = float(self.t[0])
+                available = float(times[-1] - boundary) if boundary is not None else 0.0
+                frame_seconds = FRAME_BITS * 2 * HALF_SYMBOL_SECONDS
+                if available < frame_seconds:
+                    self.status_line = (
+                        f"Signal ended — buffering full frame "
+                        f"{available:.1f}/{frame_seconds:.1f}s"
+                    )
+                    return
                 self.decode_pending = True
                 self.csv.flush()
                 self._decode()
+
+    def _append_signal_trace(self, timestamp: float):
+        """Keep a human-readable, once-per-second signal log in the dashboard."""
+        if self.next_signal_log_time is not None and timestamp < self.next_signal_log_time:
+            return
+        self.next_signal_log_time = timestamp + 1.0
+        state = "TONE" if self.tone_now else "quiet"
+        margin = self.current_amplitude - self.threshold
+        self.signal_trace.append(
+            f"t={timestamp:8.2f} {state:<5} amp={self.current_amplitude:7.2f} "
+            f"thr={self.threshold:7.2f} Δ={margin:+7.2f}"
+        )
 
     def _decode(self):
         times = np.asarray(self.t)
@@ -423,19 +469,29 @@ class LiveReceiver:
             f"Samples      {self.total_samples:,}",
             f"Receiver t   {receiver_time:.1f} s",
             f"Plot buffer  {buffer_seconds:.1f} s",
+            f"Amplitude    {self.current_amplitude:.2f}",
             f"Threshold    {self.threshold:.2f}",
+            f"Noise floor  {self.noise_floor:.2f}",
+            f"Signal high  {self.signal_high:.2f}",
             f"Separation   {self.separation:.2f}",
+            f"Tone state   {'ON' if self.tone_now else 'quiet'}",
+            f"Silence      {self.current_silence:.1f} s",
             f"Log file     {log_name}",
             "",
             self.status_line,
             "",
-            "RECENT EVENTS",
+            "LIVE SIGNAL LOG",
             "─" * self._PANEL_WIDTH,
         ]
         lines: list[str] = []
         for line in header:
             lines.extend(self._wrap_panel_line(line))
-        events = self.log.recent()
+        if self.signal_trace:
+            lines.extend(list(self.signal_trace))
+        else:
+            lines.append("Waiting for signal samples…")
+        lines.extend(["", "RECENT EVENTS", "─" * self._PANEL_WIDTH])
+        events = self.log.recent()[-7:]
         if events:
             for event in events:
                 lines.extend(self._wrap_panel_line(event.compact(), "       "))

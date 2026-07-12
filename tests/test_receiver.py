@@ -110,6 +110,16 @@ class DecodeNoisyTests(unittest.TestCase):
                 result.flag_bits, (0, 1, 0, 1), msg=f"failed at seed {seed}"
             )
 
+    def test_incomplete_frame_is_rejected_cleanly(self):
+        # A short startup burst must not become an analyzer error halfway
+        # through flag decoding; it is rejected before DSP frame selection.
+        samples = int(protocol.DEFAULT_SAMPLE_RATE_HZ * 5)
+        t = np.arange(samples) / protocol.DEFAULT_SAMPLE_RATE_HZ
+        x = np.ones(samples)
+        y = np.ones(samples)
+        with self.assertRaisesRegex(ValueError, "complete frame requires"):
+            decoder.decode_repeats(t, x, y)
+
     def test_majority_vote_overrules_one_corrupted_repeat(self):
         # 3x emergency repeats, the middle one deliberately inverted. Per-bit
         # majority voting must still land on the true flags.
