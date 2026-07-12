@@ -51,6 +51,13 @@ COLOR_MARK = "#f59e0b"
 COLOR_PANEL_BG = "#0f172a"
 COLOR_PANEL_FG = "#e2e8f0"
 
+# Reject decodes whose best tilde-preamble correlation (summed over the two ADC
+# channels, so it maxes at 2.0) falls below this absolute floor. Real captures —
+# clean or heavily noised — score ~1.7; pure 8 Hz-band noise tops out near 0.3.
+# Below the floor the envelope tripped on interference, not a beacon: surface it
+# as WARN, never as a confident emergency shown to rescuers.
+MIN_PREAMBLE_CONFIDENCE = 0.8
+
 
 class LiveReceiver:
     def __init__(self, args, event_log: EventLog | None = None):
@@ -107,6 +114,8 @@ class LiveReceiver:
         self.signal_logged = False
         self.last_tone_time = None
         self.decode_pending = False
+        self.last_decode_time = None  # boundary: decode only samples newer than this
+        self._closed = False          # close() must be idempotent (see close())
         self.status_line = "Waiting for the first signal…"
         self._marker_artists: list = []
 
@@ -244,14 +253,40 @@ class LiveReceiver:
                 self._decode()
 
     def _decode(self):
+        times = np.asarray(self.t)
+        xs = np.asarray(self.x)
+        ys = np.asarray(self.y)
+        # Vote only over samples captured since the previous decode. Otherwise a
+        # second transmission arriving within the ~90 s plot window is majority-
+        # voted together with the last message's stale frames — blending two
+        # emergencies or downgrading a real one toward heartbeat.
+        if self.last_decode_time is not None:
+            fresh = times > self.last_decode_time
+            times, xs, ys = times[fresh], xs[fresh], ys[fresh]
+
         try:
             result = decoder.decode_repeats(
-                np.asarray(self.t), np.asarray(self.x), np.asarray(self.y),
+                times, xs, ys,
                 carrier=self.args.carrier, bandwidth=self.args.bandwidth,
             )
         except Exception as exc:  # never let a bad capture kill the loop
             self.log.emit("ERROR", f"decode failed: {exc}")
             self.status_line = f"Decode failed: {exc}"
+            self._reset_after_decode()
+            return
+
+        best_score = max((frame.preamble_score for frame in result.frames), default=0.0)
+        floor = getattr(self.args, "min_confidence", MIN_PREAMBLE_CONFIDENCE)
+        if best_score < floor:
+            # The envelope tripped on interference/noise, not a real beacon
+            # (decode_repeats always returns *some* label). Flag it, draw no
+            # markers — never present noise to rescuers as a decoded emergency.
+            self.log.emit(
+                "WARN",
+                f"low-confidence signal ignored — preamble {best_score:.2f} "
+                f"< {floor:.2f} (would read {result.label} {result.code})",
+            )
+            self.status_line = f"Low-confidence signal ignored ({best_score:.2f})"
             self._reset_after_decode()
             return
 
@@ -271,6 +306,10 @@ class LiveReceiver:
         self.signal_logged = False
         self.last_tone_time = None
         self.decode_pending = False
+        # Advance the decode boundary so the next decode only votes over samples
+        # that arrive after this message ended.
+        if self.t:
+            self.last_decode_time = float(self.t[-1])
 
     def _add_decode_markers(self, result):
         """Big, clear markers at each decoded frame start on the amplitude pane."""
@@ -389,6 +428,12 @@ class LiveReceiver:
         plt.show()
 
     def close(self):
+        # Idempotent: close() fires from the window close_event, the
+        # --stop-after-decode path, and the main() finally — often twice in one
+        # shutdown. Re-running it would emit to an already-closed log handle.
+        if self._closed:
+            return
+        self._closed = True
         if not self.stop_event.is_set():
             self.source.close()
         if not self.csv.closed:
@@ -412,6 +457,8 @@ def parse_args():
     parser.add_argument("--silence", type=float, default=5.0)
     parser.add_argument("--tone-confirm", type=float, default=0.3)
     parser.add_argument("--min-separation", type=float, default=2.0)
+    parser.add_argument("--min-confidence", type=float, default=MIN_PREAMBLE_CONFIDENCE,
+                        help="reject decodes below this preamble score (0-2 scale)")
     parser.add_argument("--plot-seconds", type=float, default=90.0)
     parser.add_argument("--stop-after-decode", action="store_true")
     return parser.parse_args()

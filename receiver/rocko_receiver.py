@@ -19,7 +19,7 @@ from pathlib import Path
 import sys
 
 from eventlog import EventLog
-from live_receiver import LiveReceiver
+from live_receiver import MIN_PREAMBLE_CONFIDENCE, LiveReceiver
 from protocol import BANDWIDTH_HZ, CARRIER_HZ, DEFAULT_SAMPLE_RATE_HZ
 from serial_source import autodetect_port, list_candidate_ports
 
@@ -48,6 +48,8 @@ def parse_args():
                         help="seconds of silence that end a beacon and trigger decode")
     parser.add_argument("--tone-confirm", type=float, default=0.3)
     parser.add_argument("--min-separation", type=float, default=2.0)
+    parser.add_argument("--min-confidence", type=float, default=MIN_PREAMBLE_CONFIDENCE,
+                        help="reject decodes below this preamble score (0-2 scale)")
     parser.add_argument("--plot-seconds", type=float, default=90.0)
     parser.add_argument("--stop-after-decode", action="store_true")
     return parser.parse_args()
