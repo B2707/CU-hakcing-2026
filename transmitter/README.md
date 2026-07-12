@@ -1,7 +1,23 @@
-# Raspberry Pi L298N Manchester transmitter
+# Cave Beacon coil transmitter (QNX 8 / Raspberry Pi 5)
 
-One-shot transmitter for the binary message `0111111010101011`. It uses regular
-Manchester encoding (`0 -> OFF/ON`, `1 -> ON/OFF`) and an 8 Hz sine carrier.
+Long-running beacon daemon that drives the L298N coil through the QNX
+`rpi_gpio` resource manager (`/dev/gpio`). No pigpio, no Linux libraries.
+
+- **Tone** = 8 Hz square wave made by flipping coil polarity on IN3/IN4
+  (62.5 ms per half-cycle) with ENB high. **No tone** = ENB low.
+- **Encoding**: regular Manchester per bit (`1 -> tone/no-tone`,
+  `0 -> no-tone/tone`), bit time 1.0 s (0.5 s half-symbols = 4 carrier
+  cycles per tone half).
+- **Frame (12 bits, ~12 s)**: tilde preamble `01111110`, then 4 flag bits
+  MSB-first — `bit3=fire  bit2=trapped  bit1=lost  bit0=injured`.
+  `0000` = heartbeat, `1111` = SOS ("help" keyword override), combinations
+  legal (`0101` = trapped+injured). Full table: `docs/equipment-codes.md`.
+- **Behavior**: heartbeat frame every 120 s. Emergency triggers arrive via
+  the spool file `/tmp/beacon_trigger` (class names or 4-bit flag strings,
+  written by `TTS/live_listen_qnx.sh`). A frame mid-transmission is always
+  finished first (~12 s worst wait), then the emergency frame goes out 3x
+  with 3 s gaps, and the heartbeat schedule resumes. Multiple triggers
+  while waiting OR-merge into one frame.
 
 ## Wiring (BCM numbering)
 
@@ -10,50 +26,71 @@ Manchester encoding (`0 -> OFF/ON`, `1 -> ON/OFF`) and an 8 Hz sine carrier.
 | GPIO22 | IN3 |
 | GPIO17 | IN4 |
 | GPIO27 | ENB |
-| GND | GND |
+| GND | GND (shared with Pi) |
 
-Connect the transmit coil to `OUT3` and `OUT4`. Remove the ENB jumper because
-GPIO27 controls ENB. The Pi and bridge must share ground. Do not power the coil
-or L298N motor supply from the Pi.
+Coil on **OUT3/OUT4**. Remove the ENB jumper (GPIO27 controls ENB).
+12 V pack only on the L298N motor supply — never on the Pi.
 
-## Install
+## Deploy (QNX Pi, `ssh qnxpi`)
 
-```bash
-sudo apt update
-sudo apt install python3-pigpio pigpio
-sudo systemctl enable --now pigpiod
+```sh
+scp transmitter/transmitter.py qnxpi:/data/home/qnxuser/transmitter/
+ssh qnxpi 'python3 -m py_compile /data/home/qnxuser/transmitter/transmitter.py'
 ```
 
-`pigpio` is intended for Raspberry Pi models supported by the `pigpiod` daemon.
-Verify daemon support for the specific Pi model and OS image before connecting
-the powered bridge.
+Python 3 comes from oss.qnx.com (`apk add python3`). The daemon needs the
+`rpi_gpio` resource manager running (`pidin | grep -i gpio`).
+
+**GPIO interface note:** the `/dev/gpio` write syntax was written against the
+documented resmgr pattern but is NOT yet verified on our Pi (it was offline
+when this was built). Before first use run
+
+```sh
+ssh qnxpi 'ls -l /dev/gpio*; use rpi_gpio 2>&1 | head -30; pidin | grep -i gpio'
+```
+
+and if the syntax differs, adjust `WRITE_COMMAND` / `DIRECTION_COMMAND` in
+`QnxGpioBackend` (top of the class, two lines).
 
 ## Run
 
-```bash
-python3 transmitter/transmitter.py
+```sh
+# bench one-shot (single frame, then exit) - start here
+python3 transmitter.py --send heartbeat
+python3 transmitter.py --send injured
+python3 transmitter.py --send trapped --send injured   # 0101 combo
+
+# the real thing: daemon (heartbeat every 120 s + spool triggers)
+python3 transmitter.py
+
+# poke the running daemon
+echo injured >> /tmp/beacon_trigger
+
+# no-hardware dry run (works on the Mac too)
+python3 transmitter.py --sim --send sos
 ```
 
-Defaults:
+Every frame is logged with timestamp+bits to `/tmp/beacon.log` (small,
+rotating). A pidfile (`/tmp/beacon.pid`) guarantees a single instance —
+two processes can never fight over the coil. On SIGINT/SIGTERM/crash the
+coil is driven off and ENB pulled low, always.
 
-- message: `0111111010101011`
-- carrier: 8 Hz
-- Manchester half-symbol rate: 0.5/s (two seconds per half)
-- PWM carrier: 20 kHz
-- maximum duty: 98%
+All timing/pins/paths are constants in `Config` (no magic numbers);
+`--heartbeat-interval`, `--bit-seconds`, `--carrier`, `--spool`,
+`--pidfile`, `--log-file`, `--gpio-dev` override per run.
 
-The default 16-bit transmission takes 64 seconds. When complete—or if the
-program is interrupted—the program sets ENB, IN3, and IN4 low.
+## Tests
 
-Override settings if needed:
-
-```bash
-python3 transmitter/transmitter.py 0111111010101011 \
-  --carrier 8 --half-rate 0.5 --power 98
+```sh
+python3 -m pytest tests/test_transmitter.py -q   # sim backend, no hardware
 ```
 
-## Safety
+## Safety / first live test
 
-The L298N can dissipate substantial heat at high current. Use suitable cooling,
-a current-limited supply, and a coil rated for the applied voltage and duty
-cycle. Test with the motor supply disabled before energizing the bridge.
+1. Motor supply OFF, run `--send heartbeat`, scope the IN3/IN4/ENB pins.
+2. Motor supply ON, `--send heartbeat` again, watch the surface scope
+   (`bench/live_scope.py`) for the 12 s frame.
+3. Only then start the daemon.
+
+The L298N heats up at high current — cool it, current-limit the supply,
+and use a coil rated for the voltage and duty cycle.
