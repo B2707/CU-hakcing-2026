@@ -21,10 +21,12 @@ python3 receiver/rocko_receiver.py            # auto-detects the Pico serial por
 The dashboard shows three panes — **both sensors raw**, **both sensors at the
 8 Hz bandpass**, and **combined carrier amplitude + adaptive tone threshold** —
 plus an expanded numbered event panel with receiver health, sample count,
-threshold, signal state, and a once-per-second live signal log showing carrier
-amplitude, threshold, and detection margin. Panes start empty; nothing is drawn until a real
-signal arrives. Each decoded frame is marked with a large star at its start.
-Use the Matplotlib toolbar to zoom/pan, or press `Q`/`Esc` to close cleanly.
+threshold and signal state. The live decoder locks the tilde preamble, then
+prints each flag decision with its Manchester-0 and Manchester-1 correlation
+scores as soon as that bit arrives. The event log is scrollable with the mouse
+wheel. Panes start empty; nothing is drawn until a real signal arrives. Each
+decoded frame is marked with a large star at its start. Use the Matplotlib
+toolbar to zoom/pan, or press `Q`/`Esc` to close cleanly.
 
 ## Data contract
 

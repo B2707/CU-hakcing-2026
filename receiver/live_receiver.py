@@ -38,10 +38,14 @@ from protocol import (
     BANDWIDTH_HZ,
     CARRIER_HZ,
     DEFAULT_SAMPLE_RATE_HZ,
+    FLAG_BITS,
     FRAME_BITS,
     HALF_SYMBOL_SECONDS,
+    PREAMBLE_BITS,
     HEARTBEAT_PERIOD_SECONDS,
     REPEAT_GAP_SECONDS,
+    complex_template,
+    flags_to_event,
 )
 from serial_source import ReplaySource, SerialSource
 
@@ -119,8 +123,14 @@ class LiveReceiver:
         self.current_amplitude = 0.0
         self.tone_now = False
         self.current_silence = 0.0
-        self.signal_trace = deque(maxlen=8)
-        self.next_signal_log_time = None
+        self.decoder_trace = deque(maxlen=100)
+        self.log_scroll_offset = 0
+        self.log_view_rows = 8
+        self.next_live_decode_time = None
+        self.live_frame_start_time = None
+        self.live_preamble_score = 0.0
+        self.live_flag_bits: list[int] = []
+        self.live_decoder_state = "SEARCHING FOR PREAMBLE"
         self.tone_run = 0.0
         self.seen_tone = False
         self.signal_logged = False
@@ -215,7 +225,7 @@ class LiveReceiver:
             color=COLOR_PANEL_FG,
         )
         self.ax_side.text(
-            0.045, 0.025, "Q / Esc: close   •   plot toolbar: zoom / pan",
+            0.045, 0.025, "Wheel: scroll logs  •  Q / Esc: close  •  toolbar: zoom / pan",
             transform=self.ax_side.transAxes, va="bottom", ha="left",
             fontsize=8, color="#94a3b8",
         )
@@ -224,6 +234,7 @@ class LiveReceiver:
             "key_press_event",
             lambda event: plt.close(self.fig) if event.key in ("q", "escape") else None,
         )
+        self.fig.canvas.mpl_connect("scroll_event", self._scroll_logs)
 
     # --- sample intake -----------------------------------------------------
 
@@ -264,6 +275,7 @@ class LiveReceiver:
         self.envelope.extend(smoothed)
         self.detector_history.extend(smoothed)
         self._update_detector(times, smoothed)
+        self._update_live_decoder(float(times[-1]))
 
     # --- tone / end-of-message detector -----------------------------------
 
@@ -298,8 +310,6 @@ class LiveReceiver:
             self.current_silence = max(0.0, float(times[-1] - self.last_tone_time))
         else:
             self.current_silence = 0.0
-        self._append_signal_trace(float(times[-1]))
-
         if self.seen_tone and self.last_tone_time is not None:
             silence = self.current_silence
             self.status_line = (
@@ -325,17 +335,95 @@ class LiveReceiver:
                 self.csv.flush()
                 self._decode()
 
-    def _append_signal_trace(self, timestamp: float):
-        """Keep a human-readable, once-per-second signal log in the dashboard."""
-        if self.next_signal_log_time is not None and timestamp < self.next_signal_log_time:
+    def _decoder_log(self, kind: str, message: str):
+        line = f"{kind:<5} {message}"
+        self.decoder_trace.append(line)
+        self.log.emit(kind, message)
+
+    def _update_live_decoder(self, now: float):
+        """Continuously expose preamble lock and each available payload bit."""
+        if self.next_live_decode_time is not None and now < self.next_live_decode_time:
             return
-        self.next_signal_log_time = timestamp + 1.0
-        state = "TONE" if self.tone_now else "quiet"
-        margin = self.current_amplitude - self.threshold
-        self.signal_trace.append(
-            f"t={timestamp:8.2f} {state:<5} amp={self.current_amplitude:7.2f} "
-            f"thr={self.threshold:7.2f} Δ={margin:+7.2f}"
+        self.next_live_decode_time = now + 0.75
+        t = np.asarray(self.t)
+        if len(t) < round((len(PREAMBLE_BITS) + 1) * self.args.sample_rate):
+            self.live_decoder_state = (
+                f"BUFFERING {len(t) / self.args.sample_rate:.1f}/"
+                f"{len(PREAMBLE_BITS):.1f}s"
+            )
+            return
+        try:
+            fs = decoder.sample_rate_from_time(t)
+            channels = decoder.analytic_channels(
+                np.asarray(self.x), np.asarray(self.y), fs,
+                self.args.carrier, self.args.bandwidth,
+            )
+            correlation = decoder.preamble_correlation(channels, fs, self.args.carrier)
+        except Exception as exc:
+            self.live_decoder_state = f"DSP WAIT: {exc}"
+            return
+
+        best = float(np.max(correlation))
+        floor = getattr(self.args, "min_confidence", MIN_PREAMBLE_CONFIDENCE)
+        peaks, properties = signal.find_peaks(
+            correlation, height=floor,
+            distance=max(1, round(fs * FRAME_BITS / 2)),
         )
+        if not len(peaks):
+            self.live_decoder_state = f"SEARCHING — best preamble {best:.2f}/{floor:.2f}"
+            return
+
+        candidate = int(peaks[-1])
+        candidate_time = float(t[candidate])
+        new_frame = (
+            self.live_frame_start_time is None
+            or candidate_time > self.live_frame_start_time + FRAME_BITS * HALF_SYMBOL_SECONDS * 2 * 0.8
+            or self.live_frame_start_time < float(t[0])
+        )
+        if new_frame:
+            self.live_frame_start_time = candidate_time
+            self.live_preamble_score = float(correlation[candidate])
+            self.live_flag_bits = []
+            self._decoder_log(
+                "SYNC", f"preamble locked t={candidate_time:.2f}s "
+                f"score={self.live_preamble_score:.2f}/2.00",
+            )
+
+        start = int(np.argmin(np.abs(t - self.live_frame_start_time)))
+        self.live_preamble_score = max(
+            self.live_preamble_score,
+            float(correlation[start]) if start < len(correlation) else 0.0,
+        )
+        half = round(fs * HALF_SYMBOL_SECONDS)
+        bit_samples = 2 * half
+        zero = complex_template([0], half, fs, self.args.carrier)
+        one = complex_template([1], half, fs, self.args.carrier)
+        while len(self.live_flag_bits) < FLAG_BITS:
+            index = len(self.live_flag_bits)
+            offset = start + (len(PREAMBLE_BITS) + index) * bit_samples
+            if offset + bit_samples > len(t):
+                break
+            score0 = decoder.template_score(channels, offset, zero)
+            score1 = decoder.template_score(channels, offset, one)
+            bit = int(score1 > score0)
+            self.live_flag_bits.append(bit)
+            name = ("fire", "trapped", "lost", "injured")[index]
+            self._decoder_log(
+                "BIT", f"{name}={bit} score0={score0:.2f} score1={score1:.2f}",
+            )
+
+        shown = "".join(map(str, self.live_flag_bits)) + "?" * (
+            FLAG_BITS - len(self.live_flag_bits)
+        )
+        if len(self.live_flag_bits) == FLAG_BITS:
+            label, code = flags_to_event(self.live_flag_bits)
+            self.live_decoder_state = (
+                f"FRAME {''.join(map(str, PREAMBLE_BITS))} {code} → {label.upper()}"
+            )
+        else:
+            self.live_decoder_state = (
+                f"LOCKED {self.live_preamble_score:.2f}/2.00  FLAGS {shown}"
+            )
 
     def _decode(self):
         times = np.asarray(self.t)
@@ -445,6 +533,18 @@ class LiveReceiver:
             break_long_words=False, break_on_hyphens=False,
         ) or [""]
 
+    def _scroll_logs(self, event):
+        if event.inaxes is not self.ax_side:
+            return
+        events = self.log.recent()
+        maximum = max(0, len(events) - self.log_view_rows)
+        if event.button == "up":
+            self.log_scroll_offset = min(maximum, self.log_scroll_offset + 3)
+        elif event.button == "down":
+            self.log_scroll_offset = max(0, self.log_scroll_offset - 3)
+        self._render_side_panel()
+        self.fig.canvas.draw_idle()
+
     def _status_style(self):
         status = self.status_line.lower()
         if "error" in status or "failed" in status:
@@ -480,18 +580,31 @@ class LiveReceiver:
             "",
             self.status_line,
             "",
-            "LIVE SIGNAL LOG",
+            "",
+            "LIVE DECODER",
+            "─" * self._PANEL_WIDTH,
+            self.live_decoder_state,
+            "",
+            "DECODER TRACE",
             "─" * self._PANEL_WIDTH,
         ]
         lines: list[str] = []
         for line in header:
             lines.extend(self._wrap_panel_line(line))
-        if self.signal_trace:
-            lines.extend(list(self.signal_trace))
+        if self.decoder_trace:
+            for entry in list(self.decoder_trace)[-4:]:
+                lines.extend(self._wrap_panel_line(entry, "      "))
         else:
-            lines.append("Waiting for signal samples…")
-        lines.extend(["", "RECENT EVENTS", "─" * self._PANEL_WIDTH])
-        events = self.log.recent()[-7:]
+            lines.append("Waiting for preamble correlation…")
+        all_events = self.log.recent()
+        end = max(0, len(all_events) - self.log_scroll_offset)
+        start = max(0, end - self.log_view_rows)
+        position = "newest" if self.log_scroll_offset == 0 else f"-{self.log_scroll_offset}"
+        lines.extend([
+            "", f"EVENT LOG ({position}; mouse wheel to scroll)",
+            "─" * self._PANEL_WIDTH,
+        ])
+        events = all_events[start:end]
         if events:
             for event in events:
                 lines.extend(self._wrap_panel_line(event.compact(), "       "))
