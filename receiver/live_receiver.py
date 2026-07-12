@@ -331,6 +331,24 @@ class LiveReceiver:
                         f"{available:.1f}/{frame_seconds:.1f}s"
                     )
                     return
+                confidence_floor = getattr(
+                    self.args, "min_confidence", MIN_PREAMBLE_CONFIDENCE
+                )
+                if (self.live_frame_start_time is None
+                        or self.live_preamble_score < confidence_floor):
+                    self.log.emit(
+                        "WARN", "signal ended without a valid tilde preamble — ignored"
+                    )
+                    self.status_line = "Signal ignored — no valid preamble"
+                    self._reset_after_decode()
+                    return
+                frame_age = float(times[-1] - self.live_frame_start_time)
+                if frame_age < frame_seconds:
+                    self.status_line = (
+                        f"Preamble locked — receiving frame "
+                        f"{frame_age:.1f}/{frame_seconds:.1f}s"
+                    )
+                    return
                 self.decode_pending = True
                 self.csv.flush()
                 self._decode()
@@ -479,6 +497,10 @@ class LiveReceiver:
         self.signal_logged = False
         self.last_tone_time = None
         self.decode_pending = False
+        self.live_frame_start_time = None
+        self.live_preamble_score = 0.0
+        self.live_flag_bits = []
+        self.live_decoder_state = "SEARCHING FOR PREAMBLE"
         # Advance the decode boundary so the next decode only votes over samples
         # that arrive after this message ended.
         if self.t:
