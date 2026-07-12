@@ -3,8 +3,8 @@
 
 Three stacked panes plus a compact event panel:
 
-    top     sensor 1 raw ADC
-    middle  sensor 1 bandpass around the 8 Hz carrier
+    top     sensor 1 + sensor 2 raw ADC
+    middle  sensor 1 + sensor 2 bandpass around the 8 Hz carrier
     bottom  combined carrier amplitude + adaptive tone threshold
     right   Rocko status header + recent numbered events
 
@@ -24,6 +24,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 import queue
+import textwrap
 import threading
 
 import matplotlib.pyplot as plt
@@ -44,7 +45,9 @@ from serial_source import ReplaySource, SerialSource
 
 # Visual identity — muted, readable, works on a projector.
 COLOR_RAW = "#2563eb"
+COLOR_RAW_2 = "#7c3aed"
 COLOR_BAND = "#0891b2"
+COLOR_BAND_2 = "#9333ea"
 COLOR_AMP = "#059669"
 COLOR_THRESH = "#dc2626"
 COLOR_MARK = "#f59e0b"
@@ -115,6 +118,7 @@ class LiveReceiver:
         self.last_tone_time = None
         self.decode_pending = False
         self.last_decode_time = None  # boundary: decode only samples newer than this
+        self.total_samples = 0        # unlike the rolling plot deque, never resets
         self._closed = False          # close() must be idempotent (see close())
         self.status_line = "Waiting for the first signal…"
         self._marker_artists: list = []
@@ -125,23 +129,41 @@ class LiveReceiver:
     # --- figure ------------------------------------------------------------
 
     def _build_figure(self):
-        self.fig = plt.figure(figsize=(15, 9))
+        self.fig = plt.figure(figsize=(16, 9.5), facecolor="#f8fafc")
         try:
             self.fig.canvas.manager.set_window_title("Rocko — cave beacon receiver")
         except Exception:  # headless / Agg backend has no window manager
             pass
+        # The event panel is operationally as important as the traces: give it
+        # over a third of the window instead of squeezing logs into a sidebar.
         grid = GridSpec(
-            3, 2, width_ratios=[3.1, 1.15], height_ratios=[1, 1, 1.15],
-            hspace=0.28, wspace=0.04, left=0.06, right=0.985, top=0.9, bottom=0.08,
+            3, 2, width_ratios=[2.35, 1.35], height_ratios=[1, 1, 1.15],
+            hspace=0.28, wspace=0.055, left=0.055, right=0.985,
+            top=0.9, bottom=0.08,
         )
         self.ax_raw = self.fig.add_subplot(grid[0, 0])
         self.ax_band = self.fig.add_subplot(grid[1, 0], sharex=self.ax_raw)
         self.ax_amp = self.fig.add_subplot(grid[2, 0], sharex=self.ax_raw)
         self.ax_side = self.fig.add_subplot(grid[:, 1])
-        self.ax_side.axis("off")
+        self.ax_side.set_facecolor(COLOR_PANEL_BG)
+        self.ax_side.set_xticks([])
+        self.ax_side.set_yticks([])
+        for spine in self.ax_side.spines.values():
+            spine.set_color("#334155")
+            spine.set_linewidth(1.2)
 
-        (self.raw_line,) = self.ax_raw.plot([], [], lw=0.9, color=COLOR_RAW)
-        (self.band_line,) = self.ax_band.plot([], [], lw=0.9, color=COLOR_BAND)
+        (self.raw_line,) = self.ax_raw.plot(
+            [], [], lw=0.9, color=COLOR_RAW, label="Sensor 1"
+        )
+        (self.raw_y_line,) = self.ax_raw.plot(
+            [], [], lw=0.8, color=COLOR_RAW_2, alpha=0.72, label="Sensor 2"
+        )
+        (self.band_line,) = self.ax_band.plot(
+            [], [], lw=0.9, color=COLOR_BAND, label="Sensor 1"
+        )
+        (self.band_y_line,) = self.ax_band.plot(
+            [], [], lw=0.8, color=COLOR_BAND_2, alpha=0.72, label="Sensor 2"
+        )
         (self.env_line,) = self.ax_amp.plot(
             [], [], lw=1.3, color=COLOR_AMP, label="carrier amplitude"
         )
@@ -149,12 +171,14 @@ class LiveReceiver:
             [], [], "--", lw=1.2, color=COLOR_THRESH, label="tone threshold"
         )
 
-        self.ax_raw.set_ylabel("Sensor 1 raw ADC")
-        self.ax_raw.set_title("Sensor 1 — raw", loc="left", fontsize=10, color="#334155")
-        self.ax_band.set_ylabel("Sensor 1 bandpass")
+        self.ax_raw.set_ylabel("Raw ADC")
+        self.ax_raw.set_title("Sensors — raw", loc="left", fontsize=10, color="#334155")
+        self.ax_raw.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.85)
+        self.ax_band.set_ylabel("Bandpass")
         self.ax_band.set_title(
-            f"Sensor 1 — {self.band_label}", loc="left", fontsize=10, color="#334155"
+            f"Sensors — {self.band_label}", loc="left", fontsize=10, color="#334155"
         )
+        self.ax_band.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.85)
         self.ax_amp.set_ylabel("Carrier amplitude")
         self.ax_amp.set_xlabel("Receiver time (s)")
         self.ax_amp.set_title(
@@ -170,13 +194,27 @@ class LiveReceiver:
             "ROCKO  ·  cave explorer safety beacon — surface receiver",
             fontsize=15, fontweight="bold", x=0.06, ha="left",
         )
+        self.status_text = self.ax_side.text(
+            0.045, 0.965, "WAITING", transform=self.ax_side.transAxes,
+            va="top", ha="left", fontsize=11, fontweight="bold", color="#ffffff",
+            bbox={"boxstyle": "round,pad=0.45", "facecolor": "#475569",
+                  "edgecolor": "none"},
+        )
         self.side_text = self.ax_side.text(
-            0.0, 1.0, "", transform=self.ax_side.transAxes, va="top", ha="left",
-            family="monospace", fontsize=9, color=COLOR_PANEL_FG,
-            bbox={"boxstyle": "round,pad=0.6", "facecolor": COLOR_PANEL_BG,
-                  "edgecolor": "#334155"},
+            0.045, 0.90, "", transform=self.ax_side.transAxes, va="top", ha="left",
+            family="monospace", fontsize=9.1, linespacing=1.32,
+            color=COLOR_PANEL_FG,
+        )
+        self.ax_side.text(
+            0.045, 0.025, "Q / Esc: close   •   plot toolbar: zoom / pan",
+            transform=self.ax_side.transAxes, va="bottom", ha="left",
+            fontsize=8, color="#94a3b8",
         )
         self.fig.canvas.mpl_connect("close_event", lambda _evt: self.close())
+        self.fig.canvas.mpl_connect(
+            "key_press_event",
+            lambda event: plt.close(self.fig) if event.key in ("q", "escape") else None,
+        )
 
     # --- sample intake -----------------------------------------------------
 
@@ -208,6 +246,7 @@ class LiveReceiver:
             self.envelope_state += self.envelope_alpha * (amplitude - self.envelope_state)
             smoothed[index] = self.envelope_state
 
+        self.total_samples += len(rows)
         self.t.extend(times)
         self.x.extend(raw_x)
         self.y.extend(raw_y)
@@ -351,34 +390,61 @@ class LiveReceiver:
         margin = max((high - low) * 0.12, 1.0)
         axis.set_ylim(low - margin, high + margin)
 
-    _PANEL_WIDTH = 34  # characters; keeps text inside the narrow side panel
+    _PANEL_WIDTH = 49
 
     @classmethod
-    def _clip(cls, text: str) -> str:
-        return text if len(text) <= cls._PANEL_WIDTH else text[: cls._PANEL_WIDTH - 1] + "…"
+    def _wrap_panel_line(cls, text: str, subsequent_indent: str = "  ") -> list[str]:
+        return textwrap.wrap(
+            text, width=cls._PANEL_WIDTH, subsequent_indent=subsequent_indent,
+            break_long_words=False, break_on_hyphens=False,
+        ) or [""]
+
+    def _status_style(self):
+        status = self.status_line.lower()
+        if "error" in status or "failed" in status:
+            return "ERROR", "#b91c1c"
+        if "low-confidence" in status or "ignored" in status:
+            return "CHECK SIGNAL", "#b45309"
+        if status.startswith("decoded"):
+            return "DECODED", "#047857"
+        if "tone" in status or "silence" in status:
+            return "RECEIVING", "#0369a1"
+        return "READY", "#475569"
 
     def _render_side_panel(self):
         log_name = self.log.path.name if self.log.path else "-"
+        receiver_time = self.t[-1] if self.t else 0.0
+        buffer_seconds = (self.t[-1] - self.t[0]) if len(self.t) >= 2 else 0.0
         header = [
             "ROCKO RECEIVER",
-            "-" * self._PANEL_WIDTH,
-            f"source : {self.source_label}",
-            f"rate   : {self.args.sample_rate:g} Hz",
-            f"samples: {len(self.t)}",
-            f"log    : {log_name}",
+            "─" * self._PANEL_WIDTH,
+            f"Source       {self.source_label}",
+            f"Sample rate  {self.args.sample_rate:g} Hz",
+            f"Samples      {self.total_samples:,}",
+            f"Receiver t   {receiver_time:.1f} s",
+            f"Plot buffer  {buffer_seconds:.1f} s",
+            f"Threshold    {self.threshold:.2f}",
+            f"Separation   {self.separation:.2f}",
+            f"Log file     {log_name}",
             "",
             self.status_line,
             "",
             "RECENT EVENTS",
-            "-" * self._PANEL_WIDTH,
+            "─" * self._PANEL_WIDTH,
         ]
+        lines: list[str] = []
+        for line in header:
+            lines.extend(self._wrap_panel_line(line))
         events = self.log.recent()
         if events:
-            body = [event.compact() for event in events]
+            for event in events:
+                lines.extend(self._wrap_panel_line(event.compact(), "       "))
         else:
-            body = ["(none yet — panes stay empty", " until a real signal arrives)"]
-        lines = ["  " + self._clip(line) for line in header + body]
+            lines.extend(self._wrap_panel_line("No events yet — waiting for a real signal."))
         self.side_text.set_text("\n".join(lines))
+        badge, color = self._status_style()
+        self.status_text.set_text(badge)
+        self.status_text.get_bbox_patch().set_facecolor(color)
 
     def update_plot(self, _frame):
         self._drain_samples()
@@ -392,11 +458,13 @@ class LiveReceiver:
         if len(self.t) >= 2:
             t = np.asarray(self.t)
             self.raw_line.set_data(t, np.asarray(self.x))
+            self.raw_y_line.set_data(t, np.asarray(self.y))
             self.band_line.set_data(t, np.asarray(self.fx))
+            self.band_y_line.set_data(t, np.asarray(self.fy))
             self.env_line.set_data(t, np.asarray(self.envelope))
             self.threshold_line.set_data(t, np.full_like(t, self.threshold))
-            self._set_limits(self.ax_raw, t, np.asarray(self.x))
-            self._set_limits(self.ax_band, t, np.asarray(self.fx))
+            self._set_limits(self.ax_raw, t, np.r_[np.asarray(self.x), np.asarray(self.y)])
+            self._set_limits(self.ax_band, t, np.r_[np.asarray(self.fx), np.asarray(self.fy)])
             self._set_limits(
                 self.ax_amp, t, np.r_[np.asarray(self.envelope), self.threshold]
             )

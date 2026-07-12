@@ -18,7 +18,7 @@ import threading
 from typing import Deque, List, Optional
 
 MAX_LOG_BYTES = 2_000_000  # rotate once the log passes ~2 MB (disk-full guard)
-ON_SCREEN_EVENTS = 8       # recent events kept for the GUI panel
+ON_SCREEN_EVENTS = 12      # recent events kept for the expanded GUI panel
 
 
 @dataclass(frozen=True)

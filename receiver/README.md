@@ -18,10 +18,12 @@ python3 receiver/rocko_receiver.py            # auto-detects the Pico serial por
 - No hardware? Replay a real recording: `python3 receiver/rocko_receiver.py --replay captures/trial.csv`
 - One `Ctrl+C` (or closing the window) stops everything and flushes the capture.
 
-The dashboard shows three panes — **sensor 1 raw**, **sensor 1 8 Hz bandpass**,
-and **combined carrier amplitude + adaptive tone threshold** — plus a compact
-numbered event panel. Panes start empty; nothing is drawn until a real signal
-arrives. Each decoded frame is marked with a large star at its start.
+The dashboard shows three panes — **both sensors raw**, **both sensors at the
+8 Hz bandpass**, and **combined carrier amplitude + adaptive tone threshold** —
+plus an expanded numbered event panel with receiver health, sample count,
+threshold, and signal state. Panes start empty; nothing is drawn until a real
+signal arrives. Each decoded frame is marked with a large star at its start.
+Use the Matplotlib toolbar to zoom/pan, or press `Q`/`Esc` to close cleanly.
 
 ## Data contract
 
