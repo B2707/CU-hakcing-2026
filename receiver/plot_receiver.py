@@ -1,53 +1,80 @@
 #!/usr/bin/env python3
-"""Interactively plot receiver CSV data with pan and zoom controls."""
+"""Offline static view of a recorded ``t,x,y`` capture, with the decoded event.
+
+Same three-pane language as the live dashboard so a saved capture reviews the
+same way:
+
+    top     sensor 1 raw ADC
+    middle  sensor 1 bandpass around the 8 Hz carrier
+    bottom  combined carrier amplitude + decoded frame markers
+
+    python receiver/plot_receiver.py captures/trial.csv
+    python receiver/plot_receiver.py trial.csv --save review.png
+"""
 
 import argparse
+
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import signal
+
+import decoder
+from protocol import BANDWIDTH_HZ, CARRIER_HZ
+
+COLOR_RAW = "#2563eb"
+COLOR_BAND = "#0891b2"
+COLOR_AMP = "#059669"
+COLOR_MARK = "#f59e0b"
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", nargs="?", default="captures/receiver.csv")
-    parser.add_argument("--center", type=float, default=8.0,
-                        help="bandpass center frequency in Hz (default: 8)")
-    parser.add_argument("--bandwidth", type=float, default=2.0,
-                        help="bandpass width in Hz (default: 2, giving 7–9 Hz)")
-    parser.add_argument("--save", help="optional path at which to save the plot")
+    parser.add_argument("--carrier", type=float, default=CARRIER_HZ)
+    parser.add_argument("--bandwidth", type=float, default=BANDWIDTH_HZ)
+    parser.add_argument("--save", help="optional path at which to save the figure")
     args = parser.parse_args()
 
-    data = np.genfromtxt(args.csv, delimiter=",", names=True)
-    data = np.atleast_1d(data)
+    data = np.atleast_1d(np.genfromtxt(args.csv, delimiter=",", names=True))
     valid = np.isfinite(data["t"]) & np.isfinite(data["x"]) & np.isfinite(data["y"])
     t, x, y = data["t"][valid], data["x"][valid], data["y"][valid]
+    fs = decoder.sample_rate_from_time(t)
 
-    fs = 1.0 / np.median(np.diff(t))
-    half_width = args.bandwidth / 2.0
-    low, high = args.center - half_width, args.center + half_width
-    if low <= 0 or high >= fs / 2:
-        parser.error(f"bandpass [{low:g}, {high:g}] Hz is invalid for fs={fs:g} Hz")
-    sos = signal.butter(4, [low, high], btype="bandpass", fs=fs, output="sos")
-    x_filtered = signal.sosfiltfilt(sos, x - np.mean(x))
-    y_filtered = signal.sosfiltfilt(sos, y - np.mean(y))
+    channels = decoder.analytic_channels(x, y, fs, args.carrier, args.bandwidth)
+    band_x = np.real(channels[0])
+    amplitude = np.abs(channels[0]) ** 2 + np.abs(channels[1]) ** 2
+    amplitude = np.sqrt(amplitude)
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
-    axes[0].plot(t, x, linewidth=0.8, color="tab:blue")
-    axes[0].set_ylabel("ADC X")
-    axes[1].plot(t, y, linewidth=0.8, color="tab:orange")
-    axes[1].set_ylabel("ADC Y")
-    axes[2].plot(t, x_filtered, linewidth=0.8, color="tab:blue", label="X filtered")
-    axes[2].plot(t, y_filtered, linewidth=0.8, color="tab:orange", alpha=0.8,
-                 label="Y filtered")
-    axes[2].set_ylabel("Filtered ADC")
-    axes[2].set_xlabel("Time (s)")
-    axes[2].set_title(f"{low:g}–{high:g} Hz bandpass (center {args.center:g} Hz)")
-    axes[2].legend(loc="upper right")
+    result = decoder.decode_repeats(t, x, y, carrier=args.carrier, bandwidth=args.bandwidth)
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
+    axes[0].plot(t, x, lw=0.8, color=COLOR_RAW)
+    axes[0].set_ylabel("Sensor 1 raw ADC")
+    axes[1].plot(t, band_x, lw=0.8, color=COLOR_BAND)
+    axes[1].set_ylabel("Sensor 1 bandpass")
+    axes[2].plot(t, amplitude, lw=1.1, color=COLOR_AMP)
+    axes[2].set_ylabel("Carrier amplitude")
+    axes[2].set_xlabel("Receiver time (s)")
+
+    top = float(amplitude.max()) if amplitude.size else 1.0
+    for index, frame in enumerate(result.frames):
+        axes[2].axvline(frame.start_time, color=COLOR_MARK, lw=1.3, alpha=0.8)
+        axes[2].scatter([frame.start_time], [top], marker="*", s=300,
+                        color=COLOR_MARK, edgecolor="#7c2d12", zorder=6)
+        axes[2].annotate(
+            f"{frame.code}\n{frame.label}" if index == 0 else frame.code,
+            xy=(frame.start_time, top), xytext=(4, -6), textcoords="offset points",
+            fontsize=8, fontweight="bold", color="#7c2d12",
+        )
 
     for axis in axes:
-        axis.grid(True, alpha=0.25)
+        axis.grid(True, alpha=0.22)
+        axis.margins(x=0)
 
-    fig.suptitle(f"Receiver capture — {len(t):,} samples at {fs:.1f} Hz")
+    fig.suptitle(
+        f"Rocko capture — {len(t):,} samples @ {fs:.1f} Hz   "
+        f"decoded: {result.label} ({result.code}), {result.agreement}",
+        fontsize=13, fontweight="bold",
+    )
     fig.tight_layout()
     if args.save:
         fig.savefig(args.save, dpi=160)
