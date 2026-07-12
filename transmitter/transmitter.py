@@ -150,6 +150,21 @@ def flags_label(flags: int) -> str:
     return "+".join(names) if names else f"flags:{flags_to_field(flags)}"
 
 
+def coded_label(flags: int) -> str:
+    """Human label + its 4-bit code, e.g. 'injured (0001)', 'SOS (1111)'.
+
+    The frozen contract (docs/equipment-codes.md, E4): every log line that names
+    an emergency carries its code so the AI side and the signals side agree.
+    """
+    label = "SOS" if flags == SOS_FLAGS else flags_label(flags)
+    return f"{label} ({flags_to_field(flags)})"
+
+
+def _wall_clock() -> str:
+    """Local wall-clock stamp for human-facing completion events (E6)."""
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 # --- trigger parsing ----------------------------------------------------
 
 
@@ -414,12 +429,19 @@ class Beacon:
         self.pending_flags = 0  # OR-merged classes waiting for the next sequence
         self.active_flags: int | None = None  # sequence on air right now
 
-    def send_frame(self, flags: int, kind: str) -> None:
+    def send_frame(self, flags: int, kind: str, progress: str | None = None) -> None:
+        """Transmit one frame, logging its start and completion (E6).
+
+        `progress` is "n/m" for a repeat within an emergency sequence; the
+        heartbeat and one-shot paths leave it None.
+        """
         bits = build_frame(flags)
         started = self.monotonic()
         self.frame_history.append((started, bits, kind))
-        LOG.info("frame out: kind=%s label=%s bits=%s", kind, flags_label(flags), bits)
+        where = f" frame {progress}" if progress else ""
+        LOG.info("tx start: %s %s%s bits=%s", kind, coded_label(flags), where, bits)
         self.transmitter.transmit_frame(bits)
+        LOG.info("tx done: %s %s%s", kind, coded_label(flags), where)
 
     def _discard_stale_spool(self) -> None:
         """The trigger queue never survives across runs."""
@@ -439,8 +461,8 @@ class Beacon:
         if batch.stop:
             LOG.info(
                 "stop received: clearing queue (pending=%s active=%s)",
-                flags_label(self.pending_flags) if self.pending_flags else "-",
-                flags_label(self.active_flags) if self.active_flags is not None else "-",
+                coded_label(self.pending_flags) if self.pending_flags else "-",
+                coded_label(self.active_flags) if self.active_flags is not None else "-",
             )
             self.pending_flags = 0
             return True
@@ -449,14 +471,14 @@ class Beacon:
         if duplicate:
             LOG.info(
                 "debounced trigger(s) already active/pending: %s",
-                flags_label(duplicate),
+                coded_label(duplicate),
             )
         if fresh:
             self.pending_flags |= fresh
             LOG.info(
                 "queued: %s (pending now %s)",
-                flags_label(fresh),
-                flags_label(self.pending_flags),
+                coded_label(fresh),
+                coded_label(self.pending_flags),
             )
         return False
 
@@ -478,7 +500,11 @@ class Beacon:
                     if self._poll_triggers():
                         stopped = True
                         break
-                self.send_frame(flags, "emergency")
+                self.send_frame(
+                    flags,
+                    "emergency",
+                    progress=f"{repeat + 1}/{self.config.emergency_repeats}",
+                )
                 sent += 1
                 if repeat + 1 < self.config.emergency_repeats and self._poll_triggers():
                     stopped = True
@@ -487,9 +513,19 @@ class Beacon:
             self.active_flags = None
         if stopped:
             LOG.info(
-                "emergency sequence aborted after %d of %d repeats",
+                "emergency sequence aborted: %s after %d of %d repeats",
+                coded_label(flags),
                 sent,
                 self.config.emergency_repeats,
+            )
+        elif sent >= self.config.emergency_repeats:
+            # E6: the whole repeat-set is on the air. Announce completion only
+            # AFTER the final frame fully finishes, stamped with the wall clock.
+            LOG.info(
+                "SIGNAL SENT: %s x%d complete at %s",
+                coded_label(flags),
+                sent,
+                _wall_clock(),
             )
         return sent, stopped
 
@@ -598,11 +634,15 @@ def _raise_exit(signum, _frame):
     raise SystemExit(128 + signum)
 
 
-def _setup_logging(log_path: str) -> None:
+def _setup_logging(log_path: str, plain: bool = False) -> None:
     LOG.setLevel(logging.INFO)
     for handler in list(LOG.handlers):  # idempotent across repeated calls
         LOG.removeHandler(handler)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    # rocko.sh owns numbering + timestamps for the unified stream, so it runs us
+    # with --log-plain (bare messages); standalone we keep asctime + level.
+    fmt = logging.Formatter(
+        "%(message)s" if plain else "%(asctime)s %(levelname)s %(message)s"
+    )
     stream = logging.StreamHandler()
     stream.setFormatter(fmt)
     LOG.addHandler(stream)
@@ -628,6 +668,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "(fire/injured/lost/trapped/sos/heartbeat or 4-bit flags) and exit",
     )
     parser.add_argument("--sim", action="store_true", help="simulated GPIO (no hardware)")
+    parser.add_argument(
+        "--log-plain",
+        action="store_true",
+        help="bare message log format (rocko.sh owns numbering + timestamps)",
+    )
     parser.add_argument("--heartbeat-interval", type=float, default=None)
     parser.add_argument("--bit-seconds", type=float, default=None)
     parser.add_argument("--carrier", type=float, default=None)
@@ -671,7 +716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         send_flags = batch.flags
 
-    _setup_logging(config.log_path)
+    _setup_logging(config.log_path, plain=args.log_plain)
     signal.signal(signal.SIGINT, _raise_exit)
     signal.signal(signal.SIGTERM, _raise_exit)
 
