@@ -1,34 +1,118 @@
 #!/usr/bin/env python3
-"""Transmit a regular-Manchester message through an L298N on a Raspberry Pi.
+"""Cave Beacon coil transmitter daemon (QNX 8 / Raspberry Pi 5).
 
-BCM wiring:
-    GPIO22 -> IN3
-    GPIO17 -> IN4
-    GPIO27 -> ENB
+Drives an L298N H-bridge coil through the QNX rpi_gpio resource manager.
 
-ENB receives high-frequency PWM for amplitude control. IN3/IN4 select the
-polarity of an 8 Hz sine carrier. Manchester OFF half-symbols disable ENB.
+Physical layer
+    "tone"    = 8 Hz square wave made by flipping coil polarity on IN3/IN4
+                (62.5 ms per half-cycle), ENB high.
+    "no tone" = ENB low (bridge gated off).
+
+Encoding
+    Regular Manchester per data bit: 1 -> tone/no-tone, 0 -> no-tone/tone.
+    Bit time 1.0 s (0.5 s half-symbols -> 4 carrier cycles per tone half).
+
+Frame (12 bits, ~12 s)
+    preamble 01111110 (tilde), then 4 flag bits MSB-first:
+        bit3=fire  bit2=trapped  bit1=lost  bit0=injured
+    0000 = heartbeat ("alive, no emergency"), 1111 = SOS (the classifier's
+    "help" keyword override), combinations legal (0101 = trapped+injured).
+
+Behavior
+    Long-running beacon: heartbeat frame every 120 s. Emergency triggers are
+    read from a spool file (class names or 4-bit flag strings); a frame that
+    is mid-transmission is always finished first, then the emergency frame is
+    sent 3x with 3 s gaps and the heartbeat schedule resumes. Also a one-shot
+    CLI mode for bench tests: transmitter.py --send injured
+
+Wiring (BCM): GPIO22 -> IN3, GPIO17 -> IN4, GPIO27 -> ENB, coil on OUT3/OUT4.
 """
 
 from __future__ import annotations
 
 import argparse
-import math
+import logging
+import logging.handlers
+import os
+import signal
+import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
-try:
-    import pigpio
-except ImportError:  # Allow encoding/unit tests on non-Pi hosts.
-    pigpio = None
+LOG = logging.getLogger("beacon")
+
+# --- frame contract (docs/equipment-codes.md; change only by telling everyone)
+PREAMBLE_BITS = "01111110"
+FLAG_FIELD_WIDTH = 4
+FLAG_FIRE = 0b1000
+FLAG_TRAPPED = 0b0100
+FLAG_LOST = 0b0010
+FLAG_INJURED = 0b0001
+HEARTBEAT_FLAGS = 0b0000
+SOS_FLAGS = 0b1111
+
+CLASS_FLAGS = {
+    "fire": FLAG_FIRE,
+    "trapped": FLAG_TRAPPED,
+    "lost": FLAG_LOST,
+    "injured": FLAG_INJURED,
+    "heartbeat": HEARTBEAT_FLAGS,
+}
+SOS_ALIASES = ("sos", "help")
+NO_OP_CLASSES = ("none",)  # classifier's "none" never triggers a transmission
+
+LOG_MAX_BYTES = 128 * 1024
+LOG_BACKUP_COUNT = 2
 
 
-DEFAULT_MESSAGE = "0111111010101011"
+class BeaconError(RuntimeError):
+    """Fatal beacon condition with a message fit for the operator."""
+
+
+@dataclass(frozen=True)
+class Config:
+    """All tunables in one place - no magic numbers below this line."""
+
+    in3_gpio: int = 22  # BCM 22 -> L298N IN3 (polarity A)
+    in4_gpio: int = 17  # BCM 17 -> L298N IN4 (polarity B)
+    enb_gpio: int = 27  # BCM 27 -> L298N ENB (bridge on/off)
+    carrier_hz: float = 8.0  # polarity-flip square wave ("the tone")
+    bit_seconds: float = 1.0  # one Manchester data bit
+    heartbeat_interval_s: float = 120.0
+    emergency_repeats: int = 3
+    emergency_gap_s: float = 3.0
+    poll_interval_s: float = 0.5  # spool check cadence while idle
+    spool_path: str = "/tmp/beacon_trigger"
+    pidfile_path: str = "/tmp/beacon.pid"
+    log_path: str = "/tmp/beacon.log"
+    gpio_dev: str = "/dev/gpio"
+
+    @property
+    def half_symbol_seconds(self) -> float:
+        return self.bit_seconds / 2.0
+
+    def validate(self) -> None:
+        if len({self.in3_gpio, self.in4_gpio, self.enb_gpio}) != 3:
+            raise ValueError("IN3, IN4, and ENB must use different GPIO pins")
+        if self.carrier_hz <= 0 or self.bit_seconds <= 0:
+            raise ValueError("carrier_hz and bit_seconds must be positive")
+        if self.heartbeat_interval_s <= 0 or self.poll_interval_s <= 0:
+            raise ValueError("heartbeat and poll intervals must be positive")
+        if self.emergency_repeats < 1 or self.emergency_gap_s < 0:
+            raise ValueError("emergency repeats/gap out of range")
+        cycles_per_half = self.carrier_hz * self.half_symbol_seconds
+        if cycles_per_half != int(cycles_per_half):
+            raise ValueError(
+                "carrier_hz * bit_seconds/2 must be a whole number of cycles"
+            )
+
+
+# --- encoding -----------------------------------------------------------
 
 
 def regular_manchester(bits: str) -> list[int]:
-    """Encode bits using 0 -> OFF/ON and 1 -> ON/OFF."""
+    """Encode bits into half-symbols: 0 -> OFF/ON and 1 -> ON/OFF."""
     if not bits or any(bit not in "01" for bit in bits):
         raise ValueError("message must be a non-empty binary string")
     symbols: list[int] = []
@@ -37,137 +121,476 @@ def regular_manchester(bits: str) -> list[int]:
     return symbols
 
 
-@dataclass(frozen=True)
-class Config:
-    in3_pin: int = 22
-    in4_pin: int = 17
-    enb_pin: int = 27
-    carrier_hz: float = 8.0
-    half_symbol_rate: float = 0.5
-    pwm_hz: int = 20_000
-    update_hz: float = 500.0
-    power_percent: float = 98.0
-
-    def validate(self) -> None:
-        if len({self.in3_pin, self.in4_pin, self.enb_pin}) != 3:
-            raise ValueError("IN3, IN4, and ENB must use different GPIO pins")
-        if self.carrier_hz <= 0 or self.half_symbol_rate <= 0:
-            raise ValueError("carrier and half-symbol rates must be positive")
-        if self.pwm_hz <= 0 or self.update_hz <= 0:
-            raise ValueError("PWM and update rates must be positive")
-        if not 0 < self.power_percent <= 100:
-            raise ValueError("power must be in the range (0, 100]")
+def flags_to_field(flags: int) -> str:
+    """4 flag bits, MSB-first: fire, trapped, lost, injured."""
+    if not 0 <= flags <= (1 << FLAG_FIELD_WIDTH) - 1:
+        raise ValueError(f"flags out of range: {flags}")
+    return format(flags, f"0{FLAG_FIELD_WIDTH}b")
 
 
-class L298NManchesterTransmitter:
-    """One-shot L298N transmitter using a pigpio-compatible connection."""
+def build_frame(flags: int) -> str:
+    """Full 12-bit frame: tilde preamble + flag field."""
+    return PREAMBLE_BITS + flags_to_field(flags)
+
+
+def flags_label(flags: int) -> str:
+    if flags == HEARTBEAT_FLAGS:
+        return "heartbeat"
+    if flags == SOS_FLAGS:
+        return "sos"
+    names = [name for name, bit in CLASS_FLAGS.items() if bit and flags & bit]
+    return "+".join(names) if names else f"flags:{flags_to_field(flags)}"
+
+
+# --- trigger parsing ----------------------------------------------------
+
+
+def parse_trigger_text(text: str) -> tuple[int | None, list[str]]:
+    """OR together every recognized token; report the unknown ones.
+
+    Accepts class names (fire/injured/lost/trapped), sos/help, heartbeat,
+    "none" (ignored), and raw 4-bit flag strings like "0101". A partially
+    written token is simply reported as unknown - never a crash.
+    """
+    flags = 0
+    recognized = False
+    unknown: list[str] = []
+    for token in text.replace(",", " ").lower().split():
+        if token in NO_OP_CLASSES:
+            continue
+        if token in SOS_ALIASES:
+            flags |= SOS_FLAGS
+            recognized = True
+        elif token in CLASS_FLAGS:
+            flags |= CLASS_FLAGS[token]
+            recognized = True
+        elif len(token) == FLAG_FIELD_WIDTH and set(token) <= {"0", "1"}:
+            flags |= int(token, 2)
+            recognized = True
+        else:
+            unknown.append(token)
+    return (flags if recognized else None, unknown)
+
+
+def consume_spool(path: str) -> int | None:
+    """Read+delete the trigger spool; return OR-merged flags or None."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as spool:
+            text = spool.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        LOG.warning("spool read failed (%s): %s", path, exc)
+        return None
+    try:
+        os.remove(path)
+    except OSError as exc:
+        LOG.warning("spool delete failed (%s): %s", path, exc)
+    flags, unknown = parse_trigger_text(text)
+    if unknown:
+        LOG.warning("spool: skipping unknown trigger tokens %s", unknown)
+    return flags
+
+
+# --- GPIO backends ------------------------------------------------------
+
+
+class SimBackend:
+    """Records (time, pin, value) events; used by tests and --sim runs."""
+
+    def __init__(self, monotonic: Callable[[], float] = time.monotonic):
+        self.monotonic = monotonic
+        self.events: list[tuple[float, int, int]] = []
+
+    def open(self) -> None:
+        pass
+
+    def write_pin(self, pin: int, value: int) -> None:
+        self.events.append((self.monotonic(), pin, value))
+
+    def close(self) -> None:
+        pass
+
+    def last_value(self, pin: int) -> int:
+        for _, event_pin, value in reversed(self.events):
+            if event_pin == pin:
+                return value
+        return 0
+
+
+class QnxGpioBackend:
+    """GPIO via the QNX rpi_gpio resource manager.
+
+    NOT yet verified against live hardware (the Pi was unreachable when this
+    was written). Two interface styles are supported:
+      - single node: text commands written to /dev/gpio ("set <pin> <value>")
+      - per-pin nodes: "1"/"0" written to /dev/gpio/<pin>
+    Verify what the Pi actually exposes with
+        ssh qnxpi 'ls -l /dev/gpio*; use rpi_gpio 2>&1 | head -30; pidin | grep -i gpio'
+    and adjust WRITE_COMMAND / DIRECTION_COMMAND if the resmgr syntax differs.
+    """
+
+    WRITE_COMMAND = "set {pin} {value}\n"
+    DIRECTION_COMMAND = "set {pin} output\n"
+
+    def __init__(self, dev_path: str, pins: Sequence[int]):
+        self.dev_path = dev_path
+        self.pins = tuple(pins)
+        self._node = None
+        self._per_pin = False
+
+    def open(self) -> None:
+        try:
+            if os.path.isdir(self.dev_path):
+                self._per_pin = True
+                for pin in self.pins:
+                    if not os.path.exists(os.path.join(self.dev_path, str(pin))):
+                        raise BeaconError(
+                            f"GPIO node missing: {self.dev_path}/{pin} "
+                            "(check `ls /dev/gpio` and the pin numbers)"
+                        )
+            else:
+                self._node = open(self.dev_path, "w", buffering=1)
+                for pin in self.pins:
+                    self._node.write(self.DIRECTION_COMMAND.format(pin=pin))
+        except OSError as exc:
+            raise BeaconError(
+                f"cannot open GPIO interface {self.dev_path}: {exc}. "
+                "Is the rpi_gpio resource manager running? "
+                "(check with: pidin | grep -i gpio)"
+            ) from exc
+
+    def write_pin(self, pin: int, value: int) -> None:
+        try:
+            if self._per_pin:
+                with open(
+                    os.path.join(self.dev_path, str(pin)), "w", encoding="ascii"
+                ) as node:
+                    node.write(f"{value}\n")
+            else:
+                assert self._node is not None
+                self._node.write(self.WRITE_COMMAND.format(pin=pin, value=value))
+        except OSError as exc:
+            raise BeaconError(f"GPIO write failed (pin {pin}): {exc}") from exc
+
+    def close(self) -> None:
+        if self._node is not None:
+            try:
+                self._node.close()
+            finally:
+                self._node = None
+
+
+# --- coil driver + frame transmitter -------------------------------------
+
+
+class CoilDriver:
+    """Maps polarity/enable intent onto the three L298N input pins."""
+
+    def __init__(self, backend, config: Config):
+        self.backend = backend
+        self.config = config
+
+    def set_polarity(self, forward: bool) -> None:
+        self.backend.write_pin(self.config.in3_gpio, 1 if forward else 0)
+        self.backend.write_pin(self.config.in4_gpio, 0 if forward else 1)
+
+    def enable(self, on: bool) -> None:
+        self.backend.write_pin(self.config.enb_gpio, 1 if on else 0)
+
+    def all_off(self) -> None:
+        """Coil safe: gate off first, then both polarity inputs low."""
+        self.enable(False)
+        self.backend.write_pin(self.config.in3_gpio, 0)
+        self.backend.write_pin(self.config.in4_gpio, 0)
+
+
+class FrameTransmitter:
+    """Sends one Manchester frame; always leaves the coil off."""
 
     def __init__(
         self,
-        connection,
-        config: Config = Config(),
+        driver: CoilDriver,
+        config: Config,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
-    ) -> None:
+    ):
         config.validate()
-        self.pi = connection
+        self.driver = driver
         self.config = config
         self.monotonic = monotonic
         self.sleep = sleep
-        self._output = getattr(pigpio, "OUTPUT", 1) if pigpio else 1
 
-    def setup(self) -> None:
-        for pin in (self.config.in3_pin, self.config.in4_pin, self.config.enb_pin):
-            self.pi.set_mode(pin, self._output)
-            self.pi.write(pin, 0)
-        self.pi.set_PWM_range(self.config.enb_pin, 10_000)
-        self.pi.set_PWM_frequency(self.config.enb_pin, self.config.pwm_hz)
-        self.pi.set_PWM_dutycycle(self.config.enb_pin, 0)
+    def _sleep_until(self, deadline: float) -> None:
+        delay = deadline - self.monotonic()
+        if delay > 0:
+            self.sleep(delay)
 
-    def stop(self) -> None:
-        self.pi.set_PWM_dutycycle(self.config.enb_pin, 0)
-        self.pi.write(self.config.in3_pin, 0)
-        self.pi.write(self.config.in4_pin, 0)
+    def _tone_until(self, symbol_start: float, deadline: float) -> None:
+        """8 Hz square: flip IN3/IN4 every half-cycle with ENB high."""
+        half_cycle = 1.0 / (2.0 * self.config.carrier_hz)
+        self.driver.enable(True)
+        edge = 0
+        while symbol_start + edge * half_cycle < deadline:
+            self.driver.set_polarity(edge % 2 == 0)
+            edge += 1
+            self._sleep_until(min(symbol_start + edge * half_cycle, deadline))
 
-    def _drive(self, value: float) -> None:
-        """Apply signed normalized bridge voltage in the range [-1, 1]."""
-        if value > 0:
-            self.pi.write(self.config.in3_pin, 1)
-            self.pi.write(self.config.in4_pin, 0)
-        elif value < 0:
-            self.pi.write(self.config.in3_pin, 0)
-            self.pi.write(self.config.in4_pin, 1)
-        else:
-            self.pi.write(self.config.in3_pin, 0)
-            self.pi.write(self.config.in4_pin, 0)
-
-        duty = round(abs(value) * self.config.power_percent * 100)
-        self.pi.set_PWM_dutycycle(self.config.enb_pin, duty)
-
-    def _active_symbol(self, start: float, deadline: float) -> None:
-        update_period = 1.0 / self.config.update_hz
-        next_update = self.monotonic()
-        while next_update < deadline:
-            phase = 2.0 * math.pi * self.config.carrier_hz * (next_update - start)
-            self._drive(math.sin(phase))
-            next_update += update_period
-            self.sleep(max(0.0, next_update - self.monotonic()))
-
-    def transmit(self, bits: str) -> None:
-        symbols: Sequence[int] = regular_manchester(bits)
-        half_period = 1.0 / self.config.half_symbol_rate
-        transmission_start = self.monotonic()
-
-        self.setup()
+    def transmit_frame(self, bits: str) -> None:
+        half_symbols = regular_manchester(bits)
+        half_seconds = self.config.half_symbol_seconds
+        start = self.monotonic()
         try:
-            for index, active in enumerate(symbols):
-                deadline = transmission_start + (index + 1) * half_period
-                if active:
-                    self._active_symbol(transmission_start, deadline)
+            for index, tone in enumerate(half_symbols):
+                symbol_start = start + index * half_seconds
+                deadline = symbol_start + half_seconds
+                if tone:
+                    self._tone_until(symbol_start, deadline)
                 else:
-                    self.stop()
-                    self.sleep(max(0.0, deadline - self.monotonic()))
+                    self.driver.enable(False)
+                    self._sleep_until(deadline)
         finally:
-            self.stop()
+            self.driver.all_off()
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("message", nargs="?", default=DEFAULT_MESSAGE)
-    parser.add_argument("--carrier", type=float, default=8.0)
-    parser.add_argument("--half-rate", type=float, default=0.5)
-    parser.add_argument("--power", type=float, default=98.0)
-    parser.add_argument("--pwm-frequency", type=int, default=20_000)
-    parser.add_argument("--update-rate", type=float, default=500.0)
-    return parser.parse_args()
+# --- beacon daemon --------------------------------------------------------
 
 
-def main() -> int:
-    args = parse_args()
-    if pigpio is None:
-        raise SystemExit("pigpio is not installed; see transmitter/README.md")
+class Beacon:
+    """Heartbeat scheduler + spool-triggered emergency frames.
 
-    config = Config(
-        carrier_hz=args.carrier,
-        half_symbol_rate=args.half_rate,
-        power_percent=args.power,
-        pwm_hz=args.pwm_frequency,
-        update_hz=args.update_rate,
-    )
-    connection = pigpio.pi()
-    if not connection.connected:
-        raise SystemExit("cannot connect to pigpiod; start it with: sudo systemctl start pigpiod")
+    The spool is only read between frames, so a frame that is already going
+    out is always finished (never corrupted); the worst-case trigger wait is
+    one frame (~12 s). Triggers that pile up while waiting OR-merge in the
+    spool file and go out as a single emergency frame.
+    """
 
-    try:
-        print(
-            f"Transmitting {args.message}: regular Manchester, "
-            f"{config.carrier_hz:g} Hz carrier"
+    def __init__(
+        self,
+        transmitter: FrameTransmitter,
+        config: Config,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
+        self.transmitter = transmitter
+        self.config = config
+        self.monotonic = monotonic
+        self.sleep = sleep
+        self.frame_history: list[tuple[float, str, str]] = []
+
+    def send_frame(self, flags: int, kind: str) -> None:
+        bits = build_frame(flags)
+        started = self.monotonic()
+        self.frame_history.append((started, bits, kind))
+        LOG.info("frame out: kind=%s label=%s bits=%s", kind, flags_label(flags), bits)
+        self.transmitter.transmit_frame(bits)
+
+    def _send_emergency(self, flags: int, budget: int | None) -> int:
+        sent = 0
+        for repeat in range(self.config.emergency_repeats):
+            if budget is not None and sent >= budget:
+                break
+            self.send_frame(flags, "emergency")
+            sent += 1
+            if repeat + 1 < self.config.emergency_repeats:
+                self.sleep(self.config.emergency_gap_s)
+        return sent
+
+    def run(self, max_frames: int | None = None) -> None:
+        """Main loop; max_frames bounds the run for tests/bench checks."""
+        LOG.info(
+            "beacon up: heartbeat every %gs, spool %s",
+            self.config.heartbeat_interval_s,
+            self.config.spool_path,
         )
-        L298NManchesterTransmitter(connection, config).transmit(args.message)
-        print("Transmission complete; L298N disabled")
+        next_heartbeat = self.monotonic()  # first heartbeat immediately
+        sent = 0
+        try:
+            while max_frames is None or sent < max_frames:
+                flags = consume_spool(self.config.spool_path)
+                now = self.monotonic()
+                if flags is not None:
+                    budget = None if max_frames is None else max_frames - sent
+                    sent += self._send_emergency(flags, budget)
+                    next_heartbeat = self.monotonic() + self.config.heartbeat_interval_s
+                elif now >= next_heartbeat:
+                    self.send_frame(HEARTBEAT_FLAGS, "heartbeat")
+                    sent += 1
+                    next_heartbeat = now + self.config.heartbeat_interval_s
+                else:
+                    self.sleep(
+                        min(self.config.poll_interval_s, next_heartbeat - now)
+                    )
+        finally:
+            self.transmitter.driver.all_off()
+
+
+# --- single-instance lock -------------------------------------------------
+
+
+class SingleInstanceLock:
+    """Pidfile lock so two processes can never fight over the coil."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._held = False
+
+    def acquire(self) -> None:
+        for _ in range(2):  # second try after clearing a stale pidfile
+            try:
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                with os.fdopen(fd, "w") as pidfile:
+                    pidfile.write(str(os.getpid()))
+                self._held = True
+                return
+            except FileExistsError:
+                other = self._read_pid()
+                if other is not None and _pid_alive(other):
+                    raise BeaconError(
+                        f"another beacon (pid {other}) already owns the coil "
+                        f"({self.path}); stop it first"
+                    )
+                try:
+                    os.remove(self.path)  # stale pidfile
+                except OSError:
+                    pass
+        raise BeaconError(f"could not acquire pidfile {self.path}")
+
+    def _read_pid(self) -> int | None:
+        try:
+            with open(self.path, "r", encoding="ascii") as pidfile:
+                return int(pidfile.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    def release(self) -> None:
+        if self._held:
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
+            self._held = False
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError):
+        return True
+    return True
+
+
+# --- CLI ------------------------------------------------------------------
+
+
+def _raise_exit(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+def _setup_logging(log_path: str) -> None:
+    LOG.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    stream = logging.StreamHandler()
+    stream.setFormatter(fmt)
+    LOG.addHandler(stream)
+    try:
+        rotating = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT
+        )
+        rotating.setFormatter(fmt)
+        LOG.addHandler(rotating)
+    except OSError as exc:
+        LOG.warning("cannot open log file %s: %s (logging to stderr only)", log_path, exc)
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Cave Beacon coil transmitter (QNX). No args = daemon mode."
+    )
+    parser.add_argument(
+        "--send",
+        action="append",
+        metavar="CLASS",
+        help="one-shot: transmit a single frame for CLASS(es) "
+        "(fire/injured/lost/trapped/sos/heartbeat or 4-bit flags) and exit",
+    )
+    parser.add_argument("--sim", action="store_true", help="simulated GPIO (no hardware)")
+    parser.add_argument("--heartbeat-interval", type=float, default=None)
+    parser.add_argument("--bit-seconds", type=float, default=None)
+    parser.add_argument("--carrier", type=float, default=None)
+    parser.add_argument("--spool", default=None)
+    parser.add_argument("--pidfile", default=None)
+    parser.add_argument("--log-file", default=None)
+    parser.add_argument("--gpio-dev", default=None)
+    return parser.parse_args(argv)
+
+
+def _config_from_args(args: argparse.Namespace) -> Config:
+    overrides = {
+        "heartbeat_interval_s": args.heartbeat_interval,
+        "bit_seconds": args.bit_seconds,
+        "carrier_hz": args.carrier,
+        "spool_path": args.spool,
+        "pidfile_path": args.pidfile,
+        "log_path": args.log_file,
+        "gpio_dev": args.gpio_dev,
+    }
+    config = replace(
+        Config(), **{key: value for key, value in overrides.items() if value is not None}
+    )
+    config.validate()
+    return config
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        config = _config_from_args(args)
+    except ValueError as exc:
+        print(f"bad config: {exc}", file=sys.stderr)
+        return 2
+
+    send_flags: int | None = None
+    if args.send:
+        send_flags, unknown = parse_trigger_text(" ".join(args.send))
+        if unknown or send_flags is None:
+            print(f"unknown class(es): {unknown or args.send}", file=sys.stderr)
+            return 2
+
+    _setup_logging(config.log_path)
+    signal.signal(signal.SIGINT, _raise_exit)
+    signal.signal(signal.SIGTERM, _raise_exit)
+
+    pins = (config.in3_gpio, config.in4_gpio, config.enb_gpio)
+    backend = SimBackend() if args.sim else QnxGpioBackend(config.gpio_dev, pins)
+    lock = None if args.sim else SingleInstanceLock(config.pidfile_path)
+    driver = CoilDriver(backend, config)
+    try:
+        if lock is not None:
+            lock.acquire()
+        backend.open()
+        transmitter = FrameTransmitter(driver, config)
+        beacon = Beacon(transmitter, config)
+        if send_flags is not None:
+            beacon.send_frame(send_flags, "one-shot")
+        else:
+            beacon.run()
+        return 0
+    except BeaconError as exc:
+        LOG.error("%s", exc)
+        return 1
     finally:
-        connection.stop()
-    return 0
+        try:
+            driver.all_off()  # coil off and ENB low, ALWAYS
+        except BeaconError as exc:
+            LOG.error("cleanup GPIO write failed: %s", exc)
+        except Exception:  # backend never opened - nothing to switch off
+            pass
+        backend.close()
+        if lock is not None:
+            lock.release()
 
 
 if __name__ == "__main__":
