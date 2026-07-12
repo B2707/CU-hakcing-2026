@@ -1,10 +1,18 @@
 /*
- * Wake-word gate. Only the phrase said AFTER the wake word is classified;
- * everything else is ignored. This is the text-side of "voice activation":
- * Whisper transcribes all speech, and this decides what counts as a command.
+ * Wake-phrase gate (project Rocko). Only the phrase said AFTER the wake
+ * phrase is classified; everything else is ignored. This is the text-side of
+ * "voice activation": Whisper transcribes all speech, and this decides what
+ * counts as a command. It is the SINGLE choke point — the shell listener pipes
+ * raw transcripts straight in and never fabricates a wake word.
  *
- * Change the wake word in one place below. Matching is whole-word and
- * case-insensitive, so "device" fires but "devices" / "mydevice" do not.
+ * Wake phrase = "hey rocko help" (decision 1, 2026-07-12). Matching is robust
+ * to whisper's variations: case, punctuation, comma splits, and the many ways
+ * "rocko" comes back ("rocco", "roko", "rock", ...). The three words must be
+ * consecutive tokens (any run of non-alphanumerics may separate them), so a
+ * stray "help" or "rocko" in normal speech never opens the gate.
+ *
+ * Saying the phrase ALONE (nothing meaningful after it) is handled by the
+ * caller as SOS — see classifier.c run_one().
  */
 #ifndef WAKE_WORD_H
 #define WAKE_WORD_H
@@ -12,36 +20,86 @@
 #include <ctype.h>
 #include <string.h>
 
-#define WAKE_WORD "device"    /* must be lowercase */
+/* Human-readable phrase for banners/help text (matching is token-based below). */
+#define WAKE_PHRASE "hey rocko help"
+
+#define WK_TOK_MAX 32     /* max chars kept per token (spoken words are short) */
+#define WK_TOKS_MAX 128   /* max tokens scanned in one transcript line */
+
+/* Read the next alphanumeric token starting at *pp, lowercased into buf.
+ * Skips leading non-alnum separators. On success returns 1, sets *tok_end to
+ * the first char past the token, and advances *pp. Returns 0 at end of string. */
+static int wk_next_token(const char **pp, char *buf, size_t bufsz,
+                         const char **tok_end) {
+    const char *p = *pp;
+    while (*p && !isalnum((unsigned char)*p)) p++;
+    if (!*p) { *pp = p; return 0; }
+    size_t n = 0;
+    while (*p && isalnum((unsigned char)*p)) {
+        if (n + 1 < bufsz) {
+            char c = *p;
+            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+            buf[n++] = c;
+        }
+        p++;
+    }
+    buf[n] = '\0';
+    *tok_end = p;
+    *pp = p;
+    return 1;
+}
+
+static int wk_in_set(const char *tok, const char *const *set, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (strcmp(tok, set[i]) == 0) return 1;
+    return 0;
+}
+
+/* Whisper variants. Kept deliberately tight: a false wake transmits a false
+ * alarm, so only near-homophones are accepted. */
+static int wk_is_hey(const char *t) {
+    static const char *const S[] = {"hey", "hay", "heya"};
+    return wk_in_set(t, S, sizeof(S) / sizeof(S[0]));
+}
+static int wk_is_rocko(const char *t) {
+    /* "rockö" tokenizes to "rock"; keep the common homophones. */
+    static const char *const S[] = {"rocko", "rocco", "roko", "rock",
+                                    "rocky", "rockoh", "rockho", "roco"};
+    return wk_in_set(t, S, sizeof(S) / sizeof(S[0]));
+}
+static int wk_is_help(const char *t) {
+    static const char *const S[] = {"help", "halp", "helps"};
+    return wk_in_set(t, S, sizeof(S) / sizeof(S[0]));
+}
 
 /*
- * If the wake word appears as a whole word, return a pointer to the start of
- * the phrase that follows it (leading spaces/punctuation skipped). Returns:
- *   - NULL                     if the wake word is not present
- *   - pointer to '\0'          if the wake word is present but nothing follows
- *   - pointer to the phrase    otherwise
- *
- * Uses the FIRST occurrence of the wake word.
+ * If the wake phrase "hey rocko help" (or a whisper variant) appears as three
+ * consecutive tokens, return a pointer into the ORIGINAL text at the start of
+ * whatever follows (leading separators skipped). Returns:
+ *   - NULL              if the wake phrase is not present (gate closed)
+ *   - pointer to '\0'   if the phrase is present but nothing follows (SOS)
+ *   - pointer to phrase otherwise
+ * Uses the FIRST occurrence of the phrase.
  */
 static const char *after_wake_word(const char *text) {
-    const char *kw = WAKE_WORD;
-    size_t klen = strlen(kw);
-    for (const char *p = text; *p; p++) {
-        size_t i = 0;
-        while (i < klen && p[i] &&
-               (char)tolower((unsigned char)p[i]) == kw[i]) i++;
-        if (i != klen) continue;
-
-        char before = (p == text) ? ' ' : p[-1];
-        char after  = p[klen];
-        int bound_before = !isalnum((unsigned char)before);
-        int bound_after  = (after == '\0') || !isalnum((unsigned char)after);
-        if (!bound_before || !bound_after) continue;
-
-        /* found it — skip the wake word, then any spaces/punctuation */
-        const char *rest = p + klen;
-        while (*rest && !isalnum((unsigned char)*rest)) rest++;
-        return rest;
+    char toks[WK_TOKS_MAX][WK_TOK_MAX];
+    const char *ends[WK_TOKS_MAX];
+    int nt = 0;
+    const char *p = text;
+    const char *end;
+    char buf[WK_TOK_MAX];
+    while (nt < WK_TOKS_MAX && wk_next_token(&p, buf, sizeof(buf), &end)) {
+        strcpy(toks[nt], buf);
+        ends[nt] = end;
+        nt++;
+    }
+    for (int i = 0; i + 2 < nt; i++) {
+        if (wk_is_hey(toks[i]) && wk_is_rocko(toks[i + 1]) &&
+            wk_is_help(toks[i + 2])) {
+            const char *rest = ends[i + 2];
+            while (*rest && !isalnum((unsigned char)*rest)) rest++;
+            return rest;
+        }
     }
     return NULL;
 }

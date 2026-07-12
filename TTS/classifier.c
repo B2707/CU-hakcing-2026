@@ -6,9 +6,14 @@
  * No dependencies beyond libc + libm. Build:
  *   cc -O2 -o classifier classifier.c -lm
  * Use:
- *   echo "device i'm lost in the woods" | ./classifier   (wake-word gated)
- *   echo "i'm lost in the woods" | ./classifier --raw    (no wake-word gate)
+ *   echo "hey rocko help i'm lost" | ./classifier   (wake-phrase gated)
+ *   echo "i'm lost in the woods"   | ./classifier --raw  (no wake gate)
  *   ./whisper-cli ... | ./classifier          (pipe transcripts in, one per line)
+ *
+ * The wake gate here is the SINGLE choke point: a line without "hey rocko help"
+ * produces NO output, so the shell listener writes nothing to the beacon spool
+ * and nothing transmits. The wake phrase said alone -> "sos"; a wake-gated
+ * cancel word (stop/cancel/ok) -> "stop", which wins over any classification.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +22,7 @@
 #include "model.h"
 #include "keyword_override.h"
 #include "wake_word.h"
+#include "cancel_word.h"
 
 /* NOTE: train.py's analyze() has no token/line caps; these bounds are an
  * intentional C-side divergence — spoken commands are short, and anything
@@ -131,10 +137,30 @@ int classify(const char *text, double *probs) {
 static int raw_mode = 0;
 
 static void run_one(const char *text) {
-    /* voice-activation gate: only classify the phrase after the wake word */
-    const char *phrase = raw_mode ? text : after_wake_word(text);
-    if (phrase == NULL || *phrase == '\0')
-        return;   /* no wake word (or nothing after it) -> stay silent */
+    /* Voice-activation gate (single choke point): only the phrase after the
+     * wake phrase is classified. In raw mode the gate is skipped (test only). */
+    const char *phrase;
+    if (raw_mode) {
+        phrase = text;
+        if (*phrase == '\0')
+            return;   /* empty raw input -> nothing to classify */
+    } else {
+        phrase = after_wake_word(text);
+        if (phrase == NULL)
+            return;   /* no wake phrase -> gate closed, stay silent */
+        if (*phrase == '\0') {
+            /* wake phrase said ALONE -> SOS (decision 1) */
+            printf("sos (1.00) | %s\n", phrase);
+            fflush(stdout);
+            return;
+        }
+        if (has_cancel_keyword(phrase)) {
+            /* wake-gated cancel wins over any classification */
+            printf("stop (1.00) | %s\n", phrase);
+            fflush(stdout);
+            return;
+        }
+    }
 
     double probs[NUM_CLASSES];
     int cls = classify(phrase, probs);
