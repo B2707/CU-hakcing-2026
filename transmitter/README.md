@@ -41,16 +41,11 @@ ssh qnxpi 'python3 -m py_compile /data/home/qnxuser/transmitter/transmitter.py'
 Python 3 comes from oss.qnx.com (`apk add python3`). The daemon needs the
 `rpi_gpio` resource manager running (`pidin | grep -i gpio`).
 
-**GPIO interface note:** the `/dev/gpio` write syntax was written against the
-documented resmgr pattern but is NOT yet verified on our Pi (it was offline
-when this was built). Before first use run
-
-```sh
-ssh qnxpi 'ls -l /dev/gpio*; use rpi_gpio 2>&1 | head -30; pidin | grep -i gpio'
-```
-
-and if the syntax differs, adjust `WRITE_COMMAND` / `DIRECTION_COMMAND` in
-`QnxGpioBackend` (top of the class, two lines).
+**GPIO interface (verified on qnxpi 2026-07-12):** `rpi_gpio` mounts one text
+node per pin under `/dev/gpio`; commands are written with no trailing newline
+(`echo -n out|on|off > /dev/gpio/<pin>`). That is exactly what
+`QnxGpioBackend` does. The nodes are `rw-rw---- uid gpio` — if writes are
+denied, run as a user in the `gpio` group (or sudo).
 
 ## Run
 
