@@ -226,6 +226,54 @@ def find_frame_starts(
     return sorted(starts) if starts else [int(np.argmax(correlation))]
 
 
+def consensus_flags(frames: Sequence[DecodedFrame]) -> Tuple[int, ...]:
+    """Combine the flag bits of repeated frames into one fail-safe consensus.
+
+    Per bit the value with the most votes wins. An *even* split (e.g. only two
+    votable frames that disagree) is broken toward the stronger accumulated
+    soft evidence — the summed ``(score0, score1)`` correlation across frames —
+    never by ``round``. ``round`` is round-half-to-even, so an even tie collapses
+    every tied bit to 0 and can manufacture a code (``0000``) matching *no*
+    decoded frame.
+
+    Fail-safe invariant: heartbeat ``0000`` is returned only when *every* decoded
+    frame independently decoded ``0000``. If the vote lands on heartbeat while any
+    frame carried an emergency bit, the best-synced frame (highest preamble
+    score) wins instead. Rationale: a false emergency is a survivable false
+    alarm, but a false heartbeat suppresses the "silence is the alarm" response —
+    the worst possible failure of this device.
+    """
+    if not frames:
+        raise ValueError("consensus_flags requires at least one frame")
+
+    votes = np.array([frame.flag_bits for frame in frames], dtype=int)
+    n_frames = len(frames)
+    score0 = np.zeros(FLAG_BITS)
+    score1 = np.zeros(FLAG_BITS)
+    for frame in frames:
+        for bit, (bit_score0, bit_score1) in enumerate(frame.bit_scores):
+            score0[bit] += bit_score0
+            score1[bit] += bit_score1
+
+    consensus: List[int] = []
+    for bit in range(FLAG_BITS):
+        ones = int(votes[:, bit].sum())
+        zeros = n_frames - ones
+        if ones > zeros:
+            consensus.append(1)
+        elif zeros > ones:
+            consensus.append(0)
+        else:  # even split — trust the stronger correlation, never round()
+            consensus.append(int(score1[bit] > score0[bit]))
+    result = tuple(consensus)
+
+    heartbeat = (0,) * FLAG_BITS
+    if result == heartbeat and not all(frame.flag_bits == heartbeat for frame in frames):
+        best = max(frames, key=lambda frame: frame.preamble_score)
+        result = tuple(int(bit) for bit in best.flag_bits)
+    return result
+
+
 def decode_repeats(
     t: Sequence[float],
     x: Sequence[float],
@@ -258,8 +306,7 @@ def decode_repeats(
         start = int(np.argmax(correlation))
         frames.append(_frame_at(channels, t, start, fs, carrier, float(correlation[start])))
 
-    votes = np.array([frame.flag_bits for frame in frames], dtype=int)
-    consensus = tuple(int(round(votes[:, bit].mean())) for bit in range(FLAG_BITS))
+    consensus = consensus_flags(frames)
     label, code = flags_to_event(consensus)
     agreeing = sum(1 for frame in frames if frame.flag_bits == consensus)
     return RepeatDecode(

@@ -74,10 +74,10 @@ class EventLog:
                 message=message,
             )
             self._recent.append(event)
-            if self._handle is not None:
+            if self._handle is not None and not self._handle.closed:
                 try:
                     self._handle.write(event.format() + "\n")
-                except OSError as exc:  # pragma: no cover - disk-full edge
+                except (OSError, ValueError) as exc:  # disk-full or closed-handle edge
                     print(f"warning: log write failed: {exc}")
         if echo:
             print(event.format(), flush=True)
