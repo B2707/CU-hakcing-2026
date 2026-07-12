@@ -151,6 +151,74 @@ class WakeGateTests(unittest.TestCase):
             self.first_token("hey hey rocko help i am lost"), "lost"
         )
 
+    # --- 2026-07-12 hardening: negated distress must never false-cancel ------
+    # The old cancel gate resolved uncertainty toward CANCEL: any wake-gated
+    # phrase with a cancel word whose stripped remainder was not a CONFIDENT
+    # emergency cancelled, and negators ("not", "nothing", "cannot") survived
+    # stripping and dragged remainders into the uncertain zone. So "i am not
+    # okay" and "nothing is okay" were silenced as cancels. Rules 1-3 fix this.
+    ALARM_CLASSES = {"fire", "injured", "lost", "trapped", "sos"}
+
+    def test_battery_stop_required(self):
+        # explicit cancels with no negator still cancel cleanly
+        for line in (
+            "hey rocko help i am okay",
+            "hey rocko help stop",
+            "hey rocko help ok ok ok",
+            "hey rocko help it is okay i got out i am fine",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self.first_token(line), "stop")
+
+    def test_battery_negated_distress_never_cancels(self):
+        # a negator disables the cancel branch; unclear content escalates to
+        # SOS. Every line must alarm (emergency or sos), never stop, never
+        # fall silent.
+        for line in (
+            "hey rocko help i am not okay",
+            "hey rocko help i am not fine i am hurt",
+            "hey rocko help nothing is okay",
+            "hey rocko help no i am not okay",
+            "hey rocko help i fell okay",
+            "hey rocko help i cannot move okay",
+            "hey rocko help i am injured but okay",
+        ):
+            with self.subTest(line=line):
+                tok = self.first_token(line)
+                self.assertNotEqual(tok, "stop", f"{line!r} must not cancel")
+                self.assertNotEqual(tok, "", f"{line!r} must not fall silent")
+                self.assertIn(tok, self.ALARM_CLASSES)
+
+    def test_battery_specific_class_survives_trailing_okay(self):
+        # a real emergency riding with a cancel/filler word keeps its class
+        self.assertEqual(
+            self.first_token("hey rocko help i am trapped okay"), "trapped"
+        )
+        self.assertEqual(
+            self.first_token(
+                "hey rocko help everything is clear now i am trapped under a rock"
+            ),
+            "trapped",
+        )
+
+    def test_battery_unclear_after_wake_is_sos_with_marker(self):
+        # a wake-gated phrase whose content is unclear transmits SOS, tagged
+        # [unclear] so the logs show why it escalated instead of falling silent.
+        out = self.classify("hey rocko help nothing is okay")
+        self.assertEqual(out.split(" ", 1)[0], "sos")
+        self.assertIn("[unclear]", out)
+
+    def test_battery_unchanged_paths(self):
+        # phrase-alone SOS and no-wake silence are untouched by the fix
+        self.assertEqual(self.first_token("hey rocko help"), "sos")
+        for line in (
+            "i am trapped and my leg is injured help me",
+            "somebody please help help help",
+            "what is the weather today",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self.classify(line), "")
+
 
 if __name__ == "__main__":
     unittest.main()

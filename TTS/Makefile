@@ -59,8 +59,15 @@ gate-test: classifier
 	  "what is the weather today" \
 	  | ./classifier
 	@echo "--- end (blank above = gate held) ---"
+	@echo "--- acceptance battery (executable checks) ---"
+	@sh gate_battery.sh ./classifier
+
+# Acceptance battery on its own: every line must produce EXACTLY its required
+# outcome (rules 1-3 cancel/distress resolution). Exits nonzero on any deviation.
+battery: classifier
+	@sh gate_battery.sh ./classifier
 
 clean:
 	rm -f classifier classifier_qnx interactive
 
-.PHONY: qnx retrain test gate-test clean
+.PHONY: qnx retrain test gate-test battery clean

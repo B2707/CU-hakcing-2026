@@ -40,6 +40,55 @@ static int cw_word_in_list(const char *tok, const char *const *list, size_t n) {
     return 0;
 }
 
+/*
+ * Negators (rule 1, 2026-07-12 hardening). If ANY of these whole-token words
+ * appears in the wake-gated phrase, the cancel branch is DISABLED entirely and
+ * the phrase proceeds to normal classification (and, if unclear, the SOS
+ * fallback). This closes the false-cancel bug: a negated distress call
+ * ("i am not okay", "nothing is okay", "i cannot move okay") used to be read as
+ * a cancel because the cancel word ("okay") survived stripping while the
+ * negator did not, leaving a bare-looking cancel. A negator is proof the
+ * speaker is NOT calling off the alarm, so cancellation must never win.
+ *
+ * Stored apostrophe-normalized; has_negator() drops apostrophes from each token
+ * before comparing, so "cant" covers "can't", "dont" covers "don't", "isnt"
+ * covers "isn't", "wasnt" covers "wasn't", and "aint" covers "ain't".
+ */
+static const char *NEGATOR_WORDS[] = {
+    "not", "no", "nothing", "never", "cannot",
+    "cant",   /* can't  */
+    "dont",   /* don't  */
+    "isnt",   /* isn't  */
+    "wasnt",  /* wasn't */
+    "aint",   /* ain't  */
+};
+#define NUM_NEGATOR_WORDS (sizeof(NEGATOR_WORDS) / sizeof(NEGATOR_WORDS[0]))
+
+/*
+ * Whole-token, case-insensitive negator scan. A token is a maximal run of
+ * alphanumerics and apostrophes; apostrophes are dropped before comparison so
+ * "can't", "cant", and "cannot" all resolve. Returns 1 if any negator is
+ * present, 0 otherwise.
+ */
+static int has_negator(const char *text) {
+    const char *p = text;
+    char tok[64];
+    while (*p) {
+        while (*p && !isalnum((unsigned char)*p) && *p != '\'') p++;  /* skip seps */
+        if (!*p) break;
+        size_t n = 0;
+        while (*p && (isalnum((unsigned char)*p) || *p == '\'')) {
+            char c = *p;
+            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+            if (c != '\'' && n + 1 < sizeof(tok)) tok[n++] = c;  /* drop apostrophes */
+            p++;
+        }
+        tok[n] = '\0';
+        if (n && cw_word_in_list(tok, NEGATOR_WORDS, NUM_NEGATOR_WORDS)) return 1;
+    }
+    return 0;
+}
+
 /* Whole-word, case-insensitive search for any cancel word. */
 static int has_cancel_keyword(const char *text) {
     for (size_t k = 0; k < NUM_CANCEL_WORDS; k++) {
