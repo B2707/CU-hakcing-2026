@@ -219,66 +219,59 @@ class SimBackend:
 
 
 class QnxGpioBackend:
-    """GPIO via the QNX rpi_gpio resource manager.
+    """GPIO via the QNX rpi_gpio resource manager (per-pin text nodes).
 
-    NOT yet verified against live hardware (the Pi was unreachable when this
-    was written). Two interface styles are supported:
-      - single node: text commands written to /dev/gpio ("set <pin> <value>")
-      - per-pin nodes: "1"/"0" written to /dev/gpio/<pin>
-    Verify what the Pi actually exposes with
-        ssh qnxpi 'ls -l /dev/gpio*; use rpi_gpio 2>&1 | head -30; pidin | grep -i gpio'
-    and adjust WRITE_COMMAND / DIRECTION_COMMAND if the resmgr syntax differs.
+    Interface verified on qnxpi 2026-07-12 via `use rpi_gpio`: the resmgr
+    mounts one node per GPIO under /dev/gpio, driven by text commands
+    written with NO trailing newline (the documented usage is `echo -n`):
+
+        echo -n out > /dev/gpio/17    # program as output
+        echo -n on  > /dev/gpio/17    # drive high
+        echo -n off > /dev/gpio/17    # drive low
+
+    Each command is a fresh open+write+close, mirroring the documented
+    usage exactly; at an 8 Hz carrier (~34 commands/s) that is cheap.
+    (A binary /dev/gpio/msg node also exists for rpi_gpio_msg_t messages
+    if we ever need more speed.)
     """
 
-    WRITE_COMMAND = "set {pin} {value}\n"
-    DIRECTION_COMMAND = "set {pin} output\n"
+    DIRECTION_OUT = b"out"
+    VALUE_COMMANDS = (b"off", b"on")  # indexed by pin value 0/1
 
     def __init__(self, dev_path: str, pins: Sequence[int]):
         self.dev_path = dev_path
         self.pins = tuple(pins)
-        self._node = None
-        self._per_pin = False
+
+    def _node_path(self, pin: int) -> str:
+        return os.path.join(self.dev_path, str(pin))
+
+    def _command(self, pin: int, command: bytes) -> None:
+        fd = os.open(self._node_path(pin), os.O_WRONLY)
+        try:
+            os.write(fd, command)
+        finally:
+            os.close(fd)
 
     def open(self) -> None:
-        try:
-            if os.path.isdir(self.dev_path):
-                self._per_pin = True
-                for pin in self.pins:
-                    if not os.path.exists(os.path.join(self.dev_path, str(pin))):
-                        raise BeaconError(
-                            f"GPIO node missing: {self.dev_path}/{pin} "
-                            "(check `ls /dev/gpio` and the pin numbers)"
-                        )
-            else:
-                self._node = open(self.dev_path, "w", buffering=1)
-                for pin in self.pins:
-                    self._node.write(self.DIRECTION_COMMAND.format(pin=pin))
-        except OSError as exc:
-            raise BeaconError(
-                f"cannot open GPIO interface {self.dev_path}: {exc}. "
-                "Is the rpi_gpio resource manager running? "
-                "(check with: pidin | grep -i gpio)"
-            ) from exc
+        for pin in self.pins:
+            try:
+                self._command(pin, self.DIRECTION_OUT)
+            except OSError as exc:
+                raise BeaconError(
+                    f"cannot program GPIO {pin} as output via "
+                    f"{self._node_path(pin)}: {exc}. Is the rpi_gpio resource "
+                    "manager running (pidin | grep -i gpio), and does this "
+                    "user have write access to the gpio group nodes?"
+                ) from exc
 
     def write_pin(self, pin: int, value: int) -> None:
         try:
-            if self._per_pin:
-                with open(
-                    os.path.join(self.dev_path, str(pin)), "w", encoding="ascii"
-                ) as node:
-                    node.write(f"{value}\n")
-            else:
-                assert self._node is not None
-                self._node.write(self.WRITE_COMMAND.format(pin=pin, value=value))
+            self._command(pin, self.VALUE_COMMANDS[1 if value else 0])
         except OSError as exc:
             raise BeaconError(f"GPIO write failed (pin {pin}): {exc}") from exc
 
     def close(self) -> None:
-        if self._node is not None:
-            try:
-                self._node.close()
-            finally:
-                self._node = None
+        pass  # no persistent handles - every command opens and closes
 
 
 # --- coil driver + frame transmitter -------------------------------------
