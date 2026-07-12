@@ -6,9 +6,17 @@
  * No dependencies beyond libc + libm. Build:
  *   cc -O2 -o classifier classifier.c -lm
  * Use:
- *   echo "device i'm lost in the woods" | ./classifier   (wake-word gated)
- *   echo "i'm lost in the woods" | ./classifier --raw    (no wake-word gate)
+ *   echo "hey rocko help i'm lost" | ./classifier   (wake-phrase gated)
+ *   echo "i'm lost in the woods"   | ./classifier --raw  (no wake gate)
  *   ./whisper-cli ... | ./classifier          (pipe transcripts in, one per line)
+ *
+ * The wake gate here is the SINGLE choke point: a line without "hey rocko help"
+ * produces NO output, so the shell listener writes nothing to the beacon spool
+ * and nothing transmits. The wake phrase said alone -> "sos". A wake-gated
+ * cancel word (stop/cancel/ok) -> "stop", but ONLY when the phrase has no
+ * negator and no surviving emergency content (rules 1-2 in run_one); a negated
+ * or unclear distress call after the wake phrase escalates to "sos", never
+ * cancels and never falls silent (rule 3).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +25,7 @@
 #include "model.h"
 #include "keyword_override.h"
 #include "wake_word.h"
+#include "cancel_word.h"
 
 /* NOTE: train.py's analyze() has no token/line caps; these bounds are an
  * intentional C-side divergence — spoken commands are short, and anything
@@ -131,10 +140,59 @@ int classify(const char *text, double *probs) {
 static int raw_mode = 0;
 
 static void run_one(const char *text) {
-    /* voice-activation gate: only classify the phrase after the wake word */
-    const char *phrase = raw_mode ? text : after_wake_word(text);
-    if (phrase == NULL || *phrase == '\0')
-        return;   /* no wake word (or nothing after it) -> stay silent */
+    /* Voice-activation gate (single choke point): only the phrase after the
+     * wake phrase is classified. In raw mode the gate is skipped (test only). */
+    const char *phrase;
+    if (raw_mode) {
+        phrase = text;
+        if (*phrase == '\0')
+            return;   /* empty raw input -> nothing to classify */
+    } else {
+        phrase = after_wake_word(text);
+        if (phrase == NULL)
+            return;   /* no wake phrase -> gate closed, stay silent */
+        if (*phrase == '\0') {
+            /* wake phrase said ALONE -> SOS (decision 1) */
+            printf("sos (1.00) | %s\n", phrase);
+            fflush(stdout);
+            return;
+        }
+        /* Cancel-vs-distress resolution (2026-07-12 hardening, rules 1-2).
+         *
+         * Rule 1 - negator guard: if the wake-gated phrase contains ANY negator
+         * ("not", "no", "nothing", "cannot", ...), the cancel branch is DISABLED
+         * entirely. A negated statement ("i am not okay", "nothing is okay") is
+         * distress, never a call-off; we fall through to classification (and, if
+         * unclear, the SOS fallback below). This closes the false-cancel bug
+         * where the cancel word survived stripping while the negator did not.
+         *
+         * Rule 2 - cancel wins narrowly: with no negator, a cancel token cancels
+         * ONLY when the cancel/filler-stripped remainder is EMPTY or its top-1
+         * class is "none" (at ANY confidence). A remainder whose top-1 is any
+         * emergency class - even below the confidence threshold - must NOT
+         * cancel. An explicit emergency keyword ("help") also blocks the cancel.
+         * So "i am okay" cancels, but "i fell okay" (remainder top-1 injured)
+         * and "i am trapped okay" (remainder top-1 trapped) do not. */
+        if (!has_negator(phrase) && has_cancel_keyword(phrase)) {
+            char remainder[MAX_LINE];
+            strip_cancel_and_filler(phrase, remainder, sizeof(remainder));
+            int cancel;
+            if (remainder[0] == '\0') {
+                cancel = 1;                 /* nothing left but the cancel word */
+            } else {
+                double rprobs[NUM_CLASSES];
+                int rcls = classify(remainder, rprobs);
+                cancel = (strcmp(CLASS_NAMES[rcls], "none") == 0);
+            }
+            if (has_emergency_keyword(phrase)) cancel = 0;
+            if (cancel) {
+                printf("stop (1.00) | %s\n", phrase);
+                fflush(stdout);
+                return;
+            }
+            /* not a cancel -> fall through to normal classification */
+        }
+    }
 
     double probs[NUM_CLASSES];
     int cls = classify(phrase, probs);
@@ -144,7 +202,16 @@ static void run_one(const char *text) {
         if (e >= 0) cls = e;
         printf("%s (%.2f) [help] | %s\n", CLASS_NAMES[cls], probs[cls], phrase);
     } else if (probs[cls] < CONF_THRESHOLD) {
-        printf("uncertain (top=%s %.2f) | %s\n", CLASS_NAMES[cls], probs[cls], phrase);
+        /* Rule 3 - SOS fallback (wake-gated path only): the speaker said the
+         * full wake phrase and then something, but the content is not a
+         * confident emergency and did not cancel. Unclear distress must
+         * transmit SOS, never fall silent; the [unclear] marker records why.
+         * Raw mode (test/verify path, no wake context) keeps the plain
+         * "uncertain" report - there is no distress to escalate there. */
+        if (raw_mode)
+            printf("uncertain (top=%s %.2f) | %s\n", CLASS_NAMES[cls], probs[cls], phrase);
+        else
+            printf("sos (1.00) [unclear] | %s\n", phrase);
     } else {
         printf("%s (%.2f) | %s\n", CLASS_NAMES[cls], probs[cls], phrase);
     }
