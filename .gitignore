@@ -21,3 +21,8 @@ __pycache__/
 .venv/
 receiver/.venv/
 captures/
+
+# compiled classifier binary (build artifact)
+TTS/classifier
+TTS/classifier_qnx
+TTS/interactive
