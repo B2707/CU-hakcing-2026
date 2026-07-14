@@ -20,7 +20,7 @@ import sys
 
 from eventlog import EventLog
 from live_receiver import MIN_PREAMBLE_CONFIDENCE, LiveReceiver
-from protocol import BANDWIDTH_HZ, CARRIER_HZ, DEFAULT_SAMPLE_RATE_HZ
+from coded_protocol import BANDWIDTH_HZ, CARRIER_HZ, DEFAULT_SAMPLE_RATE_HZ
 from serial_source import autodetect_port, list_candidate_ports
 
 BANNER = r"""

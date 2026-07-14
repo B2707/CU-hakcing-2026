@@ -32,21 +32,17 @@ from matplotlib.gridspec import GridSpec
 import numpy as np
 from scipy import signal
 
-import decoder
+import coded_protocol as protocol
+import layered_decoder
 from eventlog import EventLog
-from protocol import (
-    BANDWIDTH_HZ,
-    CARRIER_HZ,
-    DEFAULT_SAMPLE_RATE_HZ,
-    FLAG_BITS,
-    FRAME_BITS,
-    HALF_SYMBOL_SECONDS,
-    PREAMBLE_BITS,
-    HEARTBEAT_PERIOD_SECONDS,
-    REPEAT_GAP_SECONDS,
-    complex_template,
-    flags_to_event,
-)
+
+BANDWIDTH_HZ = protocol.BANDWIDTH_HZ
+CARRIER_HZ = protocol.CARRIER_HZ
+DEFAULT_SAMPLE_RATE_HZ = protocol.DEFAULT_SAMPLE_RATE_HZ
+FRAME_BITS = protocol.CODED_BITS
+HALF_SYMBOL_SECONDS = protocol.HALF_SYMBOL_SECONDS
+PREAMBLE_BITS = tuple(map(int, protocol.ENCODED_HEADER))
+REPEAT_GAP_SECONDS = protocol.INTERFRAME_GAP_SECONDS
 from serial_source import ReplaySource, SerialSource
 
 # Visual identity — muted, readable, works on a projector.
@@ -130,7 +126,8 @@ class LiveReceiver:
         self.live_frame_start_time = None
         self.live_preamble_score = 0.0
         self.live_flag_bits: list[int] = []
-        self.live_decoder_state = "SEARCHING FOR PREAMBLE"
+        self.live_frame_reported = False
+        self.live_decoder_state = "SEARCHING FOR CODED TILDE"
         self.tone_run = 0.0
         self.seen_tone = False
         self.signal_logged = False
@@ -359,134 +356,127 @@ class LiveReceiver:
         self.log.emit(kind, message)
 
     def _update_live_decoder(self, now: float):
-        """Continuously expose preamble lock and each available payload bit."""
+        """Lock the coded tilde and expose 28-bit frame progress in real time."""
         if self.next_live_decode_time is not None and now < self.next_live_decode_time:
             return
         self.next_live_decode_time = now + 0.75
         t = np.asarray(self.t)
-        if len(t) < round((len(PREAMBLE_BITS) + 1) * self.args.sample_rate):
+        header_seconds = len(protocol.ENCODED_HEADER) * protocol.BIT_SECONDS
+        if len(t) < round(header_seconds * self.args.sample_rate):
             self.live_decoder_state = (
-                f"BUFFERING {len(t) / self.args.sample_rate:.1f}/"
-                f"{len(PREAMBLE_BITS):.1f}s"
+                f"BUFFERING CODED HEADER {len(t)/self.args.sample_rate:.1f}/"
+                f"{header_seconds:.1f}s"
             )
             return
         try:
-            fs = decoder.sample_rate_from_time(t)
-            channels = decoder.analytic_channels(
-                np.asarray(self.x), np.asarray(self.y), fs,
-                self.args.carrier, self.args.bandwidth,
+            fs = layered_decoder.sample_rate(t)
+            channels = layered_decoder.analytic_channels(
+                np.asarray(self.x), np.asarray(self.y), fs
             )
-            correlation = decoder.preamble_correlation(channels, fs, self.args.carrier)
+            half = round(fs * protocol.HALF_SYMBOL_SECONDS)
+            template = protocol.complex_template(protocol.ENCODED_HEADER, half, fs)
+            correlation = sum(
+                layered_decoder.sliding_correlation(channel, template)
+                for channel in channels
+            )
         except Exception as exc:
             self.live_decoder_state = f"DSP WAIT: {exc}"
             return
 
         best = float(np.max(correlation))
         floor = getattr(self.args, "min_confidence", MIN_PREAMBLE_CONFIDENCE)
-        peaks, properties = signal.find_peaks(
+        peaks, _ = signal.find_peaks(
             correlation, height=floor,
-            distance=max(1, round(fs * FRAME_BITS / 2)),
+            distance=max(1, round(fs * protocol.CODED_BITS / 2)),
         )
         if not len(peaks):
-            self.live_decoder_state = f"SEARCHING — best preamble {best:.2f}/{floor:.2f}"
+            self.live_decoder_state = f"SEARCHING CODED ~ — best {best:.2f}/{floor:.2f}"
             return
 
         candidate = int(peaks[-1])
         candidate_time = float(t[candidate])
         new_frame = (
             self.live_frame_start_time is None
-            or candidate_time > self.live_frame_start_time + FRAME_BITS * HALF_SYMBOL_SECONDS * 2 * 0.8
+            or candidate_time > self.live_frame_start_time + protocol.CODED_BITS * 0.75
             or self.live_frame_start_time < float(t[0])
         )
         if new_frame:
             self.live_frame_start_time = candidate_time
             self.live_preamble_score = float(correlation[candidate])
             self.live_flag_bits = []
+            self.live_frame_reported = False
             self._decoder_log(
-                "SYNC", f"preamble locked t={candidate_time:.2f}s "
+                "SYNC", f"coded tilde locked t={candidate_time:.2f}s "
                 f"score={self.live_preamble_score:.2f}/2.00",
             )
 
-        start = int(np.argmin(np.abs(t - self.live_frame_start_time)))
-        self.live_preamble_score = max(
-            self.live_preamble_score,
-            float(correlation[start]) if start < len(correlation) else 0.0,
+        age = max(0.0, now - self.live_frame_start_time)
+        received = min(protocol.CODED_BITS, int(age / protocol.BIT_SECONDS))
+        self.live_decoder_state = (
+            f"HEADER ~ LOCKED {self.live_preamble_score:.2f}/2.00  "
+            f"CODED {received:02d}/{protocol.CODED_BITS}  LETTER pending"
         )
-        half = round(fs * HALF_SYMBOL_SECONDS)
-        bit_samples = 2 * half
-        zero = complex_template([0], half, fs, self.args.carrier)
-        one = complex_template([1], half, fs, self.args.carrier)
-        while len(self.live_flag_bits) < FLAG_BITS:
-            index = len(self.live_flag_bits)
-            offset = start + (len(PREAMBLE_BITS) + index) * bit_samples
-            if offset + bit_samples > len(t):
-                break
-            score0 = decoder.template_score(channels, offset, zero)
-            score1 = decoder.template_score(channels, offset, one)
-            bit = int(score1 > score0)
-            self.live_flag_bits.append(bit)
-            name = ("fire", "trapped", "lost", "injured")[index]
-            self._decoder_log(
-                "BIT", f"{name}={bit} score0={score0:.2f} score1={score1:.2f}",
-            )
+        if received < protocol.CODED_BITS or self.live_frame_reported:
+            return
 
-        shown = "".join(map(str, self.live_flag_bits)) + "?" * (
-            FLAG_BITS - len(self.live_flag_bits)
+        try:
+            keep = t >= self.live_frame_start_time - 0.1
+            result = layered_decoder.decode_capture(
+                t[keep], np.asarray(self.x)[keep], np.asarray(self.y)[keep]
+            )
+        except Exception as exc:
+            self.live_decoder_state = f"LAYER DECODE WAIT: {exc}"
+            return
+        self.live_frame_reported = True
+        for layer in result.layers:
+            marker = "OK" if layer.success else "--"
+            self._decoder_log(
+                "LAYER", f"{layer.layer:<9} {marker} header=0x{layer.header:02X} "
+                f"letter={layer.letter} parity={'ok' if layer.parity_ok else 'bad'} "
+                f"confidence={layer.confidence:.2f}",
+            )
+        chosen = result.selected
+        self.live_decoder_state = (
+            f"HEADER ~  LETTER {chosen.letter}  LAYER {chosen.layer}  "
+            f"successful={','.join(result.successful_layers) or 'none'}"
         )
-        if len(self.live_flag_bits) == FLAG_BITS:
-            label, code = flags_to_event(self.live_flag_bits)
-            self.live_decoder_state = (
-                f"FRAME {''.join(map(str, PREAMBLE_BITS))} {code} → {label.upper()}"
-            )
-        else:
-            self.live_decoder_state = (
-                f"LOCKED {self.live_preamble_score:.2f}/2.00  FLAGS {shown}"
-            )
 
     def _decode(self):
-        times = np.asarray(self.t)
-        xs = np.asarray(self.x)
-        ys = np.asarray(self.y)
-        # Vote only over samples captured since the previous decode. Otherwise a
-        # second transmission arriving within the ~90 s plot window is majority-
-        # voted together with the last message's stale frames — blending two
-        # emergencies or downgrading a real one toward heartbeat.
+        times, xs, ys = np.asarray(self.t), np.asarray(self.x), np.asarray(self.y)
         if self.last_decode_time is not None:
             fresh = times > self.last_decode_time
             times, xs, ys = times[fresh], xs[fresh], ys[fresh]
-
         try:
-            result = decoder.decode_repeats(
-                times, xs, ys,
-                carrier=self.args.carrier, bandwidth=self.args.bandwidth,
-            )
-        except Exception as exc:  # never let a bad capture kill the loop
-            self.log.emit("ERROR", f"decode failed: {exc}")
-            self.status_line = f"Decode failed: {exc}"
+            result = layered_decoder.decode_capture(times, xs, ys)
+        except Exception as exc:
+            self.log.emit("WARN", f"layered decode rejected signal: {exc}")
+            self.status_line = f"Signal rejected: {exc}"
             self._reset_after_decode()
             return
-
-        best_score = max((frame.preamble_score for frame in result.frames), default=0.0)
         floor = getattr(self.args, "min_confidence", MIN_PREAMBLE_CONFIDENCE)
-        if best_score < floor:
-            # The envelope tripped on interference/noise, not a real beacon
-            # (decode_repeats always returns *some* label). Flag it, draw no
-            # markers — never present noise to rescuers as a decoded emergency.
+        if result.preamble_score < floor or not result.successful_layers:
             self.log.emit(
-                "WARN",
-                f"low-confidence signal ignored — preamble {best_score:.2f} "
-                f"< {floor:.2f} (would read {result.label} {result.code})",
+                "WARN", f"coded frame rejected — preamble={result.preamble_score:.2f} "
+                f"successful layers={result.successful_layers or 'none'}",
             )
-            self.status_line = f"Low-confidence signal ignored ({best_score:.2f})"
+            self.status_line = "Coded frame rejected"
             self._reset_after_decode()
             return
-
+        for layer in result.layers:
+            marker = "OK" if layer.success else "--"
+            self.log.emit(
+                "LAYER", f"{layer.layer} {marker} header=0x{layer.header:02X} "
+                f"letter={layer.letter} parity={'ok' if layer.parity_ok else 'bad'}",
+            )
+        chosen = result.selected
         self.log.emit(
-            "DECODE",
-            f"{result.label} ({result.code}) — {result.agreement}",
+            "DECODE", f"header=~ letter={chosen.letter} layer={chosen.layer} "
+            f"successful={','.join(result.successful_layers)}",
         )
-        self.status_line = f"Decoded: {result.label} ({result.code})"
-        self._add_decode_markers(result)
+        self.status_line = (
+            f"Decoded: header=~ letter={chosen.letter} layer={chosen.layer}"
+        )
+        self._add_decode_marker(result)
         self._reset_after_decode()
         if self.args.stop_after_decode:
             self.close()
@@ -500,30 +490,28 @@ class LiveReceiver:
         self.live_frame_start_time = None
         self.live_preamble_score = 0.0
         self.live_flag_bits = []
-        self.live_decoder_state = "SEARCHING FOR PREAMBLE"
-        # Advance the decode boundary so the next decode only votes over samples
-        # that arrive after this message ended.
+        self.live_frame_reported = False
+        self.live_decoder_state = "SEARCHING FOR CODED TILDE"
         if self.t:
             self.last_decode_time = float(self.t[-1])
 
-    def _add_decode_markers(self, result):
-        """Big, clear markers at each decoded frame start on the amplitude pane."""
+    def _add_decode_marker(self, result):
         top = max(self.envelope) if self.envelope else 1.0
-        for index, frame in enumerate(result.frames):
-            line = self.ax_amp.axvline(
-                frame.start_time, color=COLOR_MARK, lw=1.4, alpha=0.8, zorder=4
-            )
-            star = self.ax_amp.scatter(
-                [frame.start_time], [top], marker="*", s=320,
-                color=COLOR_MARK, edgecolor="#7c2d12", linewidth=0.8, zorder=6,
-            )
-            label = self.ax_amp.annotate(
-                f"{result.code}\n{result.label}" if index == 0 else result.code,
-                xy=(frame.start_time, top), xytext=(4, -6),
-                textcoords="offset points", fontsize=8, fontweight="bold",
-                color="#7c2d12", zorder=6,
-            )
-            self._marker_artists.append((frame.start_time, [line, star, label]))
+        when = result.start_time
+        chosen = result.selected
+        line = self.ax_amp.axvline(
+            when, color=COLOR_MARK, lw=1.4, alpha=0.8, zorder=4
+        )
+        star = self.ax_amp.scatter(
+            [when], [top], marker="*", s=320, color=COLOR_MARK,
+            edgecolor="#7c2d12", linewidth=0.8, zorder=6,
+        )
+        label = self.ax_amp.annotate(
+            f"~ {chosen.letter}\n{chosen.layer}", xy=(when, top), xytext=(4, -6),
+            textcoords="offset points", fontsize=8, fontweight="bold",
+            color="#7c2d12", zorder=6,
+        )
+        self._marker_artists.append((when, [line, star, label]))
 
     def _prune_markers(self, left_edge):
         keep = []
@@ -673,9 +661,8 @@ class LiveReceiver:
         )
         self.log.emit(
             "READY",
-            f"auto-decode after {self.args.silence:g}s silence "
-            f"(spans {REPEAT_GAP_SECONDS:g}s repeat gaps, "
-            f"under {HEARTBEAT_PERIOD_SECONDS:g}s heartbeat)",
+            f"layered 4-to-7 decode after {self.args.silence:g}s silence "
+            f"(28 coded bits, 8 Hz bandpass, {REPEAT_GAP_SECONDS:g}s frame gap)",
         )
         self.source.start()
         from matplotlib.animation import FuncAnimation

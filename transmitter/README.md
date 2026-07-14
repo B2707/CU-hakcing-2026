@@ -114,3 +114,14 @@ python3 -m pytest tests/test_transmitter.py -q   # sim backend, no hardware
 
 The L298N heats up at high current — cool it, current-limit the supply,
 and use a coil rated for the voltage and duty cycle.
+
+## Coded alphabet mode
+
+```sh
+python3 alphabet_transmitter.py              # A..Z continuously, 15 s gaps
+python3 alphabet_transmitter.py --start M     # begin at M
+python3 alphabet_transmitter.py --start A --once
+```
+
+This mode uses the two-byte 4-to-7 protocol in `docs/alphabet-protocol.md` and
+runs independently of the microphone emergency daemon.

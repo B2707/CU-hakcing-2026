@@ -56,22 +56,13 @@ Copy [`pico_main.py`](pico_main.py) onto the Pico as `main.py`. It streams the
 | GND | — | sensor ground | shared |
 | USB | — | — | to the laptop, 115200 baud |
 
-## The frame it decodes (frozen contract)
+## The frame it decodes
 
-8-bit tilde preamble `01111110` + 4 flag bits `bit3=fire bit2=trapped
-bit1=lost bit0=injured`, Manchester (`1 → tone/no-tone`, `0 → no-tone/tone`),
-8 Hz carrier, **1.0 s/bit**. Emergencies repeat **3× with 3 s gaps**; a
-heartbeat `0000` is sent every 120 s.
-
-| Flags | Meaning |
-|---|---|
-| 0000 | heartbeat |
-| 1000 | fire |
-| 0100 | trapped |
-| 0010 | lost |
-| 0001 | injured |
-| 1111 | SOS / help |
-| other | OR-combination, e.g. `0101` = trapped+injured |
+The current protocol is documented in [`docs/alphabet-protocol.md`](../docs/alphabet-protocol.md):
+encoded tilde header plus one capital letter, four 4-to-7 parity groups, 28
+regular-Manchester coded bits at an 8 Hz carrier, followed by a 15-second gap.
+The analyzer runs naive-max and Gaussian-Bayes layers L1/L2/L3 plus hybrid L4,
+and displays the header, letter, and successful selected layer.
 
 ## Individual tools
 
