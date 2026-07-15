@@ -1,0 +1,91 @@
+"""Tests for the finite 100%/1% transmitter diagnostic."""
+
+from pathlib import Path
+import sys
+import unittest
+
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "transmitter"))
+
+import duty_pair_test as diagnostic  # noqa: E402
+import transmitter as hw  # noqa: E402
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class FakeDriver:
+    def __init__(self):
+        self.enabled = False
+        self.enable_events = []
+        self.polarities = []
+        self.off_calls = 0
+
+    def set_polarity(self, forward):
+        self.polarities.append(forward)
+
+    def enable(self, on):
+        self.enabled = on
+        self.enable_events.append(on)
+
+    def all_off(self):
+        self.enabled = False
+        self.off_calls += 1
+
+
+class ScheduleTests(unittest.TestCase):
+    def test_exact_paired_schedule(self):
+        self.assertEqual(
+            diagnostic.test_schedule(),
+            (
+                (100.0, "A"), (1.0, "A"),
+                (100.0, "B"), (1.0, "B"),
+                (100.0, "C"), (1.0, "C"),
+                (100.0, "D"), (1.0, "D"),
+                (100.0, "E"), (1.0, "E"),
+            ),
+        )
+
+    def test_estimate_is_six_minutes_fifty_five_seconds(self):
+        self.assertEqual(diagnostic.estimated_seconds(), 415.0)
+
+
+class PulseTests(unittest.TestCase):
+    def test_one_percent_at_eight_hz_uses_625_microsecond_pulses(self):
+        clock = FakeClock()
+        driver = FakeDriver()
+        config = hw.Config()
+        transmitter = diagnostic.DutyFrameTransmitter(
+            driver, config, monotonic=clock.monotonic, sleep=clock.sleep
+        )
+        stats = transmitter.transmit_frame("1", 1.0)
+        self.assertAlmostEqual(clock.now, 1.0)
+        self.assertEqual(len(stats.widths), 8)
+        for width in stats.widths:
+            self.assertAlmostEqual(width, 0.000625)
+        self.assertEqual(stats.late_starts, 0)
+        self.assertFalse(driver.enabled)
+        self.assertGreaterEqual(driver.off_calls, 1)
+
+    def test_invalid_duty_is_rejected_before_gpio(self):
+        clock = FakeClock()
+        driver = FakeDriver()
+        transmitter = diagnostic.DutyFrameTransmitter(
+            driver, hw.Config(), monotonic=clock.monotonic, sleep=clock.sleep
+        )
+        for duty in (0, -1, 101):
+            with self.subTest(duty=duty), self.assertRaises(ValueError):
+                transmitter.transmit_frame("1", duty)
+        self.assertEqual(driver.enable_events, [])
+
+
+if __name__ == "__main__":
+    unittest.main()
