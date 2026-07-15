@@ -34,9 +34,25 @@ def test_schedule() -> tuple[tuple[float, str], ...]:
     return tuple((duty, letter) for letter in LETTERS for duty in DUTIES)
 
 
-def estimated_seconds(gap: float = GAP_SECONDS) -> float:
-    frames = len(test_schedule())
-    return frames * FRAME_BITS + (frames - 1) * gap
+def requested_schedule(
+    single_duty: float | None = None, letter: str = "A"
+) -> tuple[tuple[float, str], ...]:
+    if single_duty is None:
+        return test_schedule()
+    letter = letter.upper()
+    if len(letter) != 1 or letter not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        raise ValueError("--letter must be A-Z")
+    if not 0 < single_duty <= 100:
+        raise ValueError("--single-duty must be in (0, 100]")
+    return ((float(single_duty), letter),)
+
+
+def estimated_seconds(
+    gap: float = GAP_SECONDS,
+    schedule: tuple[tuple[float, str], ...] | None = None,
+) -> float:
+    frames = len(schedule if schedule is not None else test_schedule())
+    return frames * FRAME_BITS + max(0, frames - 1) * gap
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -148,6 +164,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gap", type=float, default=GAP_SECONDS)
     parser.add_argument("--manifest", help="output CSV (default: timestamped file here)")
+    parser.add_argument(
+        "--single-duty", type=float,
+        help="send one diagnostic frame at this commanded duty instead of the pair test",
+    )
+    parser.add_argument("--letter", default="A", help="letter for --single-duty (default A)")
     parser.add_argument("--sim", action="store_true", help="record GPIO calls without hardware")
     parser.add_argument("--dry-run", action="store_true", help="print schedule and exit")
     return parser.parse_args()
@@ -162,8 +183,12 @@ def main() -> int:
     if args.gap < 0:
         print("--gap must be non-negative", file=sys.stderr)
         return 2
-    schedule = test_schedule()
-    duration = estimated_seconds(args.gap)
+    try:
+        schedule = requested_schedule(args.single_duty, args.letter)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    duration = estimated_seconds(args.gap, schedule)
     print(
         f"Diagnostic schedule: {len(schedule)} frames, {args.gap:g}s gaps, "
         f"estimated {duration/60:.2f} minutes",

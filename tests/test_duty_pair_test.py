@@ -57,6 +57,16 @@ class ScheduleTests(unittest.TestCase):
     def test_estimate_is_six_minutes_fifty_five_seconds(self):
         self.assertEqual(diagnostic.estimated_seconds(), 415.0)
 
+    def test_single_frame_schedule_and_duration(self):
+        schedule = diagnostic.requested_schedule(0.1, "e")
+        self.assertEqual(schedule, ((0.1, "E"),))
+        self.assertEqual(diagnostic.estimated_seconds(schedule=schedule), 28.0)
+
+    def test_single_frame_arguments_are_strict(self):
+        for duty, letter in ((0, "A"), (101, "A"), (0.1, "AA"), (0.1, "1")):
+            with self.subTest(duty=duty, letter=letter), self.assertRaises(ValueError):
+                diagnostic.requested_schedule(duty, letter)
+
 
 class PulseTests(unittest.TestCase):
     def test_one_percent_at_eight_hz_uses_625_microsecond_pulses(self):
@@ -74,6 +84,18 @@ class PulseTests(unittest.TestCase):
         self.assertEqual(stats.late_starts, 0)
         self.assertFalse(driver.enabled)
         self.assertGreaterEqual(driver.off_calls, 1)
+
+    def test_point_one_percent_at_eight_hz_targets_62_point_5_microseconds(self):
+        clock = FakeClock()
+        driver = FakeDriver()
+        transmitter = diagnostic.DutyFrameTransmitter(
+            driver, hw.Config(), monotonic=clock.monotonic, sleep=clock.sleep
+        )
+        stats = transmitter.transmit_frame("1", 0.1)
+        self.assertEqual(len(stats.widths), 8)
+        self.assertAlmostEqual(stats.target_seconds, 0.0000625)
+        for width in stats.widths:
+            self.assertAlmostEqual(width, 0.0000625)
 
     def test_invalid_duty_is_rejected_before_gpio(self):
         clock = FakeClock()
