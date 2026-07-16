@@ -125,3 +125,18 @@ python3 alphabet_transmitter.py --start A --once
 
 This mode uses the two-byte 4-to-7 protocol in `docs/alphabet-protocol.md` and
 runs independently of the microphone emergency daemon.
+
+## Hamming long-range training sweep
+
+`hamming_sweep.py` is the next-protocol finite data-collection tool. It uses
+standard even-parity Hamming(7,4), 0.5 coded bit/s, six randomized duty levels,
+30 A-E training frames, and five held-out F-J test frames. Precise duty is
+produced by QNX hardware PWM with a 1024-count range.
+
+**Rewire L298N ENB from GPIO27 to hardware-PWM GPIO18 before execution.**
+Without `--execute`, the command is always a dry run:
+
+```sh
+python3 hamming_sweep.py --phase all            # schedule only
+python3 hamming_sweep.py --phase all --execute  # energizes the coil
+```
