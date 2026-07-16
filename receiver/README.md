@@ -59,8 +59,9 @@ Copy [`pico_main.py`](pico_main.py) onto the Pico as `main.py`. It streams the
 ## The frame it decodes
 
 The current protocol is documented in [`docs/alphabet-protocol.md`](../docs/alphabet-protocol.md):
-encoded tilde header plus one capital letter, four 4-to-7 parity groups, 28
-regular-Manchester coded bits at an 8 Hz carrier, followed by a 15-second gap.
+encoded tilde header plus one capital letter, four Hamming(7,4) groups, 28
+regular-Manchester bits at 0.5 coded bit/s on an 8 Hz carrier, followed by a
+15-second gap.
 The analyzer runs naive-max and Gaussian-Bayes layers L1/L2/L3 plus hybrid L4,
 and displays the header, letter, and successful selected layer.
 

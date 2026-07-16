@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Layered Gaussian-Bayes decoder for the 4-to-7 alphabet protocol."""
+"""Layered Gaussian-Bayes decoder for the Hamming(7,4) alphabet protocol."""
 
 from __future__ import annotations
 
@@ -67,12 +67,17 @@ class GaussianClassifier:
         return np.stack(output, axis=1)
 
 
-def _triplet_features(r0, r1):
+def _check_features(r0, r1):
+    """Eight matched features for each of the three Hamming parity checks."""
     groups = len(r0) // 7
-    a, b = r0.reshape(groups, 7), r1.reshape(groups, 7)
-    first = np.stack((a[:, 0], b[:, 0], a[:, 1], b[:, 1], a[:, 2], b[:, 2]), axis=1)
-    second = np.stack((a[:, 3], b[:, 3], a[:, 4], b[:, 4], a[:, 5], b[:, 5]), axis=1)
-    return np.stack((first, second), axis=1).reshape(-1, 6)
+    first, second = r0.reshape(groups, 7), r1.reshape(groups, 7)
+    checks = []
+    for positions in p.HAMMING_CHECKS:
+        feature = np.empty((groups, 8))
+        feature[:, 0::2] = first[:, list(positions)]
+        feature[:, 1::2] = second[:, list(positions)]
+        checks.append(feature)
+    return np.stack(checks, axis=1).reshape(-1, 8)
 
 
 def _group_features(r0, r1):
@@ -115,10 +120,15 @@ def trained_models():
     r1 = np.where(words == 0, active, inactive)
 
     l1 = GaussianClassifier(2).fit(r0.reshape(-1, 1), words.reshape(-1))
-    trip_y = np.stack(
-        (2 * words[:, 0] + words[:, 1], 2 * words[:, 3] + words[:, 4]), axis=1
-    ).reshape(-1)
-    l2 = GaussianClassifier(4).fit(_triplet_features(r0.reshape(-1), r1.reshape(-1)), trip_y)
+    check_y = np.stack([
+        4 * words[:, positions[0]]
+        + 2 * words[:, positions[1]]
+        + words[:, positions[2]]
+        for positions in p.HAMMING_CHECKS
+    ], axis=1).reshape(-1)
+    l2 = GaussianClassifier(8).fit(
+        _check_features(r0.reshape(-1), r1.reshape(-1)), check_y
+    )
     l3 = GaussianClassifier(16).fit(_group_features(r0.reshape(-1), r1.reshape(-1)), classes)
     return l1, l2, l3
 
@@ -133,8 +143,8 @@ def decode_observations(r0: Sequence[float], r1: Sequence[float]) -> tuple[Layer
     # Naive-max: independent bit decisions, with parity checked afterward.
     naive_bits = (r0 > r1).astype(np.int8)
     naive_classes = (
-        8 * naive_bits[0::7] + 4 * naive_bits[1::7]
-        + 2 * naive_bits[3::7] + naive_bits[4::7]
+        8 * naive_bits[2::7] + 4 * naive_bits[4::7]
+        + 2 * naive_bits[5::7] + naive_bits[6::7]
     )
     naive_conf = float(np.mean(np.abs(r0 - r1)))
 
@@ -145,14 +155,16 @@ def decode_observations(r0: Sequence[float], r1: Sequence[float]) -> tuple[Layer
         l1_scores[:, cls] = sum(bit_scores[:, k, word[k]] for k in range(7))
     l1_classes = np.argmax(l1_scores, axis=1)
 
-    # L2: two 3-bit parity triplets per group, exactly as the old benchmark.
-    l2_trip_scores = l2.scores(_triplet_features(r0, r1)).reshape(groups, 2, 4)
-    first, second = np.argmax(l2_trip_scores, axis=2).T
-    l2_classes = 8 * (first >> 1) + 4 * (first & 1) + 2 * (second >> 1) + (second & 1)
+    # L2: local Gaussian evidence from all three overlapping Hamming checks.
+    l2_check_scores = l2.scores(_check_features(r0, r1)).reshape(groups, 3, 8)
     l2_scores = np.empty((groups, 16))
-    for cls in range(16):
-        a, b, _, c, d, _, _ = p.GROUP_CODEBOOK[cls]
-        l2_scores[:, cls] = l2_trip_scores[:, 0, 2*a+b] + l2_trip_scores[:, 1, 2*c+d]
+    for cls, word in enumerate(p.GROUP_CODEBOOK):
+        score = np.zeros(groups)
+        for check_index, positions in enumerate(p.HAMMING_CHECKS):
+            label = 4 * word[positions[0]] + 2 * word[positions[1]] + word[positions[2]]
+            score += l2_check_scores[:, check_index, label]
+        l2_scores[:, cls] = score
+    l2_classes = np.argmax(l2_scores, axis=1)
 
     # L3: one 14-D Gaussian per complete valid seven-bit group.
     l3_scores = l3.scores(_group_features(r0, r1))

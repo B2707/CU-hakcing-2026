@@ -1,4 +1,4 @@
-"""Tests for the two-byte 4-to-7 coded alphabet protocol."""
+"""Tests for the two-byte Hamming(7,4) alphabet protocol."""
 
 from pathlib import Path
 import sys
@@ -17,8 +17,20 @@ import alphabet_transmitter  # noqa: E402
 
 class ProtocolTests(unittest.TestCase):
     def test_known_group_encoding(self):
-        self.assertEqual(alphabet_transmitter.encode_group("0111"), "0111101")
-        self.assertEqual(alphabet_transmitter.encode_group("1110"), "1101011")
+        self.assertEqual(alphabet_transmitter.encode_group("0111"), "0001111")
+        self.assertEqual(alphabet_transmitter.encode_group("1110"), "0010110")
+
+    def test_hamming_code_has_minimum_distance_three(self):
+        words = protocol.GROUP_CODEBOOK
+        distances = [
+            np.count_nonzero(words[left] != words[right])
+            for left in range(16) for right in range(left + 1, 16)
+        ]
+        self.assertEqual(min(distances), 3)
+
+    def test_half_baud_timing_contract(self):
+        self.assertEqual(protocol.BIT_SECONDS, 2.0)
+        self.assertEqual(protocol.HALF_SYMBOL_SECONDS, 1.0)
 
     def test_tilde_and_letter_are_msb_first_and_28_bits(self):
         coded = alphabet_transmitter.build_message("A")
@@ -56,8 +68,8 @@ class LayeredDecoderTests(unittest.TestCase):
         coded = protocol.encode_message("Q")
         r0 = np.where(coded == 1, 0.9, 0.1).astype(float)
         r1 = np.where(coded == 0, 0.9, 0.1).astype(float)
-        # Flip only a parity observation; constrained layers should still expose
-        # valid candidates while naive-max reports its failed parity check.
+        # Flip one observation; constrained layers should still expose valid
+        # candidates while naive-max reports its failed Hamming checks.
         r0[2], r1[2] = r1[2], r0[2]
         layers = layered_decoder.decode_observations(r0, r1)
         naive = layers[0]

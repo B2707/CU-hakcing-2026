@@ -123,8 +123,8 @@ python3 alphabet_transmitter.py --start M     # begin at M
 python3 alphabet_transmitter.py --start A --once
 ```
 
-This mode uses the two-byte 4-to-7 protocol in `docs/alphabet-protocol.md` and
-runs independently of the microphone emergency daemon.
+This mode uses the two-byte Hamming(7,4) protocol at 0.5 coded bit/s from
+`docs/alphabet-protocol.md` and runs independently of the microphone daemon.
 
 ## Hamming long-range training sweep
 

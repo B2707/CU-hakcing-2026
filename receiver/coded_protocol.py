@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Two-byte Manchester/parity protocol shared by receiver tooling.
+"""Two-byte Hamming(7,4) Manchester protocol shared by receiver tooling.
 
 Payload is two MSB-first bytes: tilde header (0x7e) and one capital ASCII
-letter. Every four data bits become seven coded bits:
-[d1,d2,d1^d2,d3,d4,d3^d4,(d1^d2)^(d3^d4)].
+letter. Every four data bits use standard even-parity Hamming layout:
+[p1,p2,d1,p4,d2,d3,d4].
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import numpy as np
 HEADER_BYTE = 0x7E
 CARRIER_HZ = 8.0
 BANDWIDTH_HZ = 1.5  # tight 7.25-8.75 Hz passband; preserves Manchester edges
-BIT_SECONDS = 1.0
-HALF_SYMBOL_SECONDS = 0.5
+BIT_SECONDS = 2.0  # 0.5 coded bit/s for 3 dB more integration energy
+HALF_SYMBOL_SECONDS = BIT_SECONDS / 2
 DEFAULT_SAMPLE_RATE_HZ = 200.0
 DATA_BYTES = 2
 DATA_BITS = 16
@@ -26,13 +26,12 @@ CODED_BITS = GROUPS * GROUP_CODED_BITS
 INTERFRAME_GAP_SECONDS = 15.0
 
 GROUP_CODEBOOK = np.array([
-    [a, b, a ^ b, c, d, c ^ d, (a ^ b) ^ (c ^ d)]
+    [a ^ b ^ d, a ^ c ^ d, a, b ^ c ^ d, b, c, d]
     for a in (0, 1) for b in (0, 1) for c in (0, 1) for d in (0, 1)
 ], dtype=np.int8)
-GROUP_DATA = GROUP_CODEBOOK[:, [0, 1, 3, 4]]
-TRIPLET_CODEBOOK = np.array(
-    [[a, b, a ^ b] for a in (0, 1) for b in (0, 1)], dtype=np.int8
-)
+GROUP_DATA = GROUP_CODEBOOK[:, [2, 4, 5, 6]]
+# Three overlapping even-parity checks in standard Hamming bit positions.
+HAMMING_CHECKS = ((0, 2, 4, 6), (1, 2, 5, 6), (3, 4, 5, 6))
 
 
 def byte_bits(value: int) -> tuple[int, ...]:
@@ -82,8 +81,10 @@ def parity_valid(coded: Sequence[int]) -> bool:
         return False
     groups = bits.reshape(GROUPS, GROUP_CODED_BITS)
     for group in groups:
-        d1, d2, p1, d3, d4, p2, x = map(int, group)
-        if p1 != (d1 ^ d2) or p2 != (d3 ^ d4) or x != (p1 ^ p2):
+        p1, p2, d1, p4, d2, d3, d4 = map(int, group)
+        if (p1 != (d1 ^ d2 ^ d4)
+                or p2 != (d1 ^ d3 ^ d4)
+                or p4 != (d2 ^ d3 ^ d4)):
             return False
     return True
 

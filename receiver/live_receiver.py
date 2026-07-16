@@ -388,7 +388,9 @@ class LiveReceiver:
         floor = getattr(self.args, "min_confidence", MIN_PREAMBLE_CONFIDENCE)
         peaks, _ = signal.find_peaks(
             correlation, height=floor,
-            distance=max(1, round(fs * protocol.CODED_BITS / 2)),
+            distance=max(
+                1, round(fs * len(protocol.ENCODED_HEADER) * protocol.BIT_SECONDS * 0.75)
+            ),
         )
         if not len(peaks):
             self.live_decoder_state = f"SEARCHING CODED ~ — best {best:.2f}/{floor:.2f}"
@@ -398,7 +400,10 @@ class LiveReceiver:
         candidate_time = float(t[candidate])
         new_frame = (
             self.live_frame_start_time is None
-            or candidate_time > self.live_frame_start_time + protocol.CODED_BITS * 0.75
+            or candidate_time > (
+                self.live_frame_start_time
+                + protocol.CODED_BITS * protocol.BIT_SECONDS * 0.75
+            )
             or self.live_frame_start_time < float(t[0])
         )
         if new_frame:
@@ -673,8 +678,8 @@ class LiveReceiver:
         )
         self.log.emit(
             "READY",
-            f"layered 4-to-7 decode after {self.args.silence:g}s silence "
-            f"(28 coded bits, 8 Hz bandpass, {REPEAT_GAP_SECONDS:g}s frame gap)",
+            f"layered Hamming(7,4) decode after {self.args.silence:g}s silence "
+            f"(28 bits at 0.5 bit/s, 8 Hz bandpass, {REPEAT_GAP_SECONDS:g}s gap)",
         )
         self.source.start()
         from matplotlib.animation import FuncAnimation

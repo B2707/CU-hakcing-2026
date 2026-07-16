@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import signal
 import string
 import sys
@@ -21,11 +22,14 @@ def byte_bits(value: int) -> str:
 
 
 def encode_group(nibble: str) -> str:
+    """Standard even-parity [p1,p2,d1,p4,d2,d3,d4] Hamming(7,4)."""
     if len(nibble) != 4 or any(bit not in "01" for bit in nibble):
         raise ValueError("group must contain four binary digits")
     d1, d2, d3, d4 = map(int, nibble)
-    p1, p2 = d1 ^ d2, d3 ^ d4
-    return f"{d1}{d2}{p1}{d3}{d4}{p2}{p1 ^ p2}"
+    p1 = d1 ^ d2 ^ d4
+    p2 = d1 ^ d3 ^ d4
+    p4 = d2 ^ d3 ^ d4
+    return f"{p1}{p2}{d1}{p4}{d2}{d3}{d4}"
 
 
 def build_message(letter: str) -> str:
@@ -51,7 +55,7 @@ def main() -> int:
         print("--start must be A-Z and --gap must be non-negative", file=sys.stderr)
         return 2
 
-    config = hw.Config(pidfile_path=PIDFILE)
+    config = replace(hw.Config(pidfile_path=PIDFILE), bit_seconds=2.0)
     pins = (config.in3_gpio, config.in4_gpio, config.enb_gpio)
     backend = hw.SimBackend() if args.sim else hw.QnxGpioBackend(config.gpio_dev, pins)
     lock = None if args.sim else hw.SingleInstanceLock(config.pidfile_path)
