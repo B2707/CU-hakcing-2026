@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Finite 100%/1% ENB-duty diagnostic for letters A through E.
+"""Finite ENB-duty diagnostics using the verified GPIO27 transmitter path.
 
-Sequence: ~A@100, ~A@1, ~B@100, ~B@1, ... ~E@100, ~E@1.
-Every frame uses the normal 28-bit coded alphabet protocol and is separated by
-15 seconds of coil-off silence. Partial duty is applied independently inside
-each 62.5 ms polarity half-cycle of the 8 Hz tone.
+The default remains the paired 100%/1% A-E diagnostic. ``--dataset`` sends a
+30-frame descending-duty dataset: A-E training frames plus one held-out F-J
+frame at each of 100%, 50%, 25%, 10%, and 1%. Every frame uses the current
+56-second Hamming alphabet protocol and a 15-second coil-off gap. Partial duty
+is applied inside each 62.5 ms polarity half-cycle of the 8 Hz tone.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ import transmitter as hw
 
 LETTERS = "ABCDE"
 DUTIES = (100.0, 1.0)
+DATASET_DUTIES = (100.0, 50.0, 25.0, 10.0, 1.0)
+HELD_OUT_LETTERS = "FGHIJ"
 GAP_SECONDS = 15.0
 ALPHABET_PIDFILE = "/tmp/alphabet_beacon.pid"
 FRAME_BITS = 28
@@ -35,9 +38,22 @@ def test_schedule() -> tuple[tuple[float, str], ...]:
     return tuple((duty, letter) for letter in LETTERS for duty in DUTIES)
 
 
+def dataset_schedule() -> tuple[tuple[float, str], ...]:
+    """Five A-E training frames plus one untouched test frame per duty."""
+    return tuple(
+        (duty, letter)
+        for duty, test_letter in zip(DATASET_DUTIES, HELD_OUT_LETTERS)
+        for letter in LETTERS + test_letter
+    )
+
+
 def requested_schedule(
-    single_duty: float | None = None, letter: str = "A"
+    single_duty: float | None = None, letter: str = "A", *, dataset: bool = False
 ) -> tuple[tuple[float, str], ...]:
+    if dataset:
+        if single_duty is not None:
+            raise ValueError("--dataset and --single-duty are mutually exclusive")
+        return dataset_schedule()
     if single_duty is None:
         return test_schedule()
     letter = letter.upper()
@@ -165,9 +181,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gap", type=float, default=GAP_SECONDS)
     parser.add_argument("--manifest", help="output CSV (default: timestamped file here)")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--single-duty", type=float,
         help="send one diagnostic frame at this commanded duty instead of the pair test",
+    )
+    mode.add_argument(
+        "--dataset", action="store_true",
+        help="descending 30-frame A-E training plus held-out F-J dataset",
     )
     parser.add_argument("--letter", default="A", help="letter for --single-duty (default A)")
     parser.add_argument("--sim", action="store_true", help="record GPIO calls without hardware")
@@ -185,7 +206,7 @@ def main() -> int:
         print("--gap must be non-negative", file=sys.stderr)
         return 2
     try:
-        schedule = requested_schedule(args.single_duty, args.letter)
+        schedule = requested_schedule(args.single_duty, args.letter, dataset=args.dataset)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -218,7 +239,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, hw._raise_exit)
 
     fields = [
-        "sequence", "letter", "duty_percent", "coded_bits", "started_utc",
+        "sequence", "phase", "letter", "duty_percent", "coded_bits", "started_utc",
         "finished_utc", "duration_s", "target_pulse_us", "pulse_count",
         "late_starts", "pulse_min_us", "pulse_median_us", "pulse_p95_us",
         "pulse_max_us",
@@ -245,6 +266,7 @@ def main() -> int:
                 summary = stats.summary()
                 writer.writerow({
                     "sequence": sequence,
+                    "phase": "train" if letter in LETTERS else "test",
                     "letter": letter,
                     "duty_percent": duty,
                     "coded_bits": bits,

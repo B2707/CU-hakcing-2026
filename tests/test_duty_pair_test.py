@@ -57,10 +57,28 @@ class ScheduleTests(unittest.TestCase):
     def test_estimate_uses_current_half_baud_frame_duration(self):
         self.assertEqual(diagnostic.estimated_seconds(), 695.0)
 
+    def test_descending_dataset_has_balanced_train_and_held_out_frames(self):
+        schedule = diagnostic.dataset_schedule()
+        self.assertEqual(len(schedule), 30)
+        for index, duty in enumerate(diagnostic.DATASET_DUTIES):
+            level = schedule[index * 6:(index + 1) * 6]
+            self.assertEqual([item[0] for item in level], [duty] * 6)
+            self.assertEqual(
+                "".join(item[1] for item in level),
+                diagnostic.LETTERS + diagnostic.HELD_OUT_LETTERS[index],
+            )
+        self.assertEqual(
+            diagnostic.estimated_seconds(schedule=schedule), 2115.0
+        )
+
     def test_single_frame_schedule_and_duration(self):
         schedule = diagnostic.requested_schedule(0.1, "e")
         self.assertEqual(schedule, ((0.1, "E"),))
         self.assertEqual(diagnostic.estimated_seconds(schedule=schedule), 56.0)
+
+    def test_dataset_and_single_frame_are_mutually_exclusive(self):
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            diagnostic.requested_schedule(10, "A", dataset=True)
 
     def test_single_frame_arguments_are_strict(self):
         for duty, letter in ((0, "A"), (101, "A"), (0.1, "AA"), (0.1, "1")):
