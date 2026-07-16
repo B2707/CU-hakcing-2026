@@ -11,11 +11,13 @@
 
 ## Latest conclusion
 
-The covariance-aware analytical coherent LLR followed by full/restricted SLNN
-codebook scoring is the strongest tested decoder. It decoded all frames at
-100%, 50%, and 25% when provided scheduled boundaries. The conventional
-layered decoder decoded fewer 25% frames, while the real-trained GNB did not
-improve held-out performance.
+The covariance-aware analytical coherent LLR decoded all frames at 100%, 50%,
+and 25% when provided scheduled or locally searched boundaries. Four separate
+16-entry Hamming group-codebook argmax decisions were verified to be exactly
+equivalent to the unrestricted 65,536-message SLNN on all 30 frames, while
+being much smaller. The experimental LLR-domain joint-Gaussian group decoder
+also reached 18/30 but did not outperform the training-free group codebook.
+The conventional layered decoder and real-trained GNB were weaker.
 
 Autonomous synchronization and H0 rejection remain limiting: many correctly
 decodable 25% frames had encoded-tilde scores below the current 0.8 threshold.
