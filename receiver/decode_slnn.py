@@ -21,9 +21,14 @@ def main() -> int:
         help="frame start in seconds after the first CSV sample",
     )
     parser.add_argument("--expected", help="optional known letter A-Z, evaluation only")
-    parser.add_argument(
+    method = parser.add_mutually_exclusive_group()
+    method.add_argument(
         "--coherent", action="store_true",
-        help="phase-align and noise-weight both sensors from the known tilde header",
+        help="legacy magnitude-based coherent sensor combining",
+    )
+    method.add_argument(
+        "--coherent-llr", action="store_true",
+        help="analytical covariance-aware coherent Manchester LLRs",
     )
     args = parser.parse_args()
 
@@ -47,13 +52,22 @@ def main() -> int:
     if index + frame_samples > len(t):
         raise SystemExit("complete frame does not fit after requested start")
 
-    if args.coherent:
+    if args.coherent_llr:
+        coherent = slnn_decoder.coherent_llrs(channels, index, fs)
+        received = coherent.llrs
+        print(
+            f"Sensor coherence: tone={coherent.tone_coherence:.4f}, "
+            f"silence={coherent.silence_coherence:.4f}"
+        )
+        print("Soft metric: analytical coherent Manchester LLR")
+    elif args.coherent:
         coherent = slnn_decoder.coherent_soft_symbols(channels, index, fs)
         received = coherent.symbols
         print(
             f"Sensor coherence: tone={coherent.tone_coherence:.4f}, "
             f"silence={coherent.silence_coherence:.4f}"
         )
+        print("Soft metric: legacy coherent magnitude difference")
     else:
         r0, r1 = layered_decoder.matched_observations(channels, index, fs)
         received = slnn_decoder.soft_symbols(r0, r1)

@@ -42,6 +42,18 @@ class CoherentSoftResult:
     silence_coherence: float
 
 
+@dataclass(frozen=True)
+class CoherentLLRResult:
+    """Analytical Manchester LLRs after covariance-aware sensor combining."""
+
+    llrs: np.ndarray
+    weights: np.ndarray
+    channel: np.ndarray
+    noise_covariance: np.ndarray
+    tone_coherence: float
+    silence_coherence: float
+
+
 @lru_cache(maxsize=1)
 def alphabet_codebook() -> np.ndarray:
     """The 26 protocol-permitted ``~A`` through ``~Z`` output weights."""
@@ -141,6 +153,82 @@ def coherent_soft_symbols(
         weights=weights,
         tone_coherence=coherence(tone_cov),
         silence_coherence=coherence(noise_cov),
+    )
+
+
+def coherent_llrs(
+    channels: Sequence[np.ndarray], start: int, fs: float
+) -> CoherentLLRResult:
+    """Return coherent-AWGN LLRs for the 28 Manchester-coded bits.
+
+    Each Manchester half is reduced to a two-sensor complex 8 Hz phasor. The
+    known encoded-tilde halves estimate the channel vector, while the central
+    transmitter-off interval after the frame estimates the noise covariance.
+    For bit ``i`` the sufficient-statistic model gives
+
+        L_i = 2 Re{h^H R^-1 (z_first - z_second)}.
+
+    If the capture has no adequate post-frame gap, header OFF halves are used
+    only as a fallback (and therefore provide a less reliable covariance).
+    """
+    if len(channels) != 2:
+        raise ValueError("coherent LLRs require exactly two sensors")
+    half = round(fs * protocol.HALF_SYMBOL_SECONDS)
+    halves = 2 * protocol.CODED_BITS
+    stop = start + halves * half
+    values = [np.asarray(channel) for channel in channels]
+    if start < 0 or any(len(channel) < stop for channel in values):
+        raise ValueError("complete frame does not fit in filtered channels")
+
+    carrier = np.exp(2j * np.pi * protocol.CARRIER_HZ * np.arange(half) / fs)
+
+    def extract(offset: int, count: int) -> np.ndarray:
+        output = np.empty((count, 2), dtype=complex)
+        for index in range(count):
+            begin = offset + index * half
+            for sensor, value in enumerate(values):
+                output[index, sensor] = (
+                    np.vdot(carrier, value[begin:begin + half]) / np.sqrt(half)
+                )
+        return output
+
+    phasors = extract(start, halves)
+    header_gate = protocol.manchester_levels(protocol.ENCODED_HEADER).astype(bool)
+    header = phasors[:len(header_gate)]
+    tone = header[header_gate]
+    header_silence = header[~header_gate]
+    channel = tone.mean(axis=0) - header_silence.mean(axis=0)
+
+    # Avoid the first/last 2.5 seconds of the 15-second gap, where the
+    # Butterworth response can still ring or the following frame can leak in.
+    noise_start = stop + round(2.5 * fs)
+    available = max(0, (len(values[0]) - noise_start) // half)
+    noise_halves = min(10, available)
+    noise = extract(noise_start, noise_halves) if noise_halves >= 4 else header_silence
+    centered_noise = noise - noise.mean(axis=0, keepdims=True)
+    noise_covariance = centered_noise.T @ centered_noise.conj() / len(centered_noise)
+    ridge = max(float(np.trace(noise_covariance).real) / 2, 1e-12) * 1e-6
+    noise_covariance = noise_covariance + ridge * np.eye(2)
+    try:
+        weights = np.linalg.solve(noise_covariance, channel)
+    except np.linalg.LinAlgError:
+        weights = np.linalg.pinv(noise_covariance) @ channel
+
+    projected = phasors @ weights.conj()
+    llrs = 2 * np.real(projected[0::2] - projected[1::2])
+
+    def coherence(covariance: np.ndarray) -> float:
+        denominator = float(covariance[0, 0].real * covariance[1, 1].real)
+        return float(abs(covariance[0, 1]) ** 2 / max(denominator, 1e-15))
+
+    tone_covariance = tone.T @ tone.conj() / len(tone)
+    return CoherentLLRResult(
+        llrs=llrs,
+        weights=weights,
+        channel=channel,
+        noise_covariance=noise_covariance,
+        tone_coherence=coherence(tone_covariance),
+        silence_coherence=coherence(noise_covariance),
     )
 
 
