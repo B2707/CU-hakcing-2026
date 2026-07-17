@@ -21,11 +21,14 @@ The conventional layered decoder and real-trained GNB were weaker.
 
 Autonomous synchronization and H0 rejection remain limiting: many correctly
 decodable 25% frames had encoded-tilde scores below the current 0.8 threshold.
-A first Duong gain-whitening prototype preserved 18/30 decoding and raised
-threshold-crossing correct frames from 12/30 to 16/30, but was numerically
-indistinguishable from static ZCA and became mismatched on the reserved portion
-of the nonstationary ten-minute noise run. It is therefore only a promising
-synchronization-weighting observation, not a demonstrated neural advantage.
+A first frozen Duong gain-whitening prototype preserved 18/30 decoding and
+raised threshold-crossing correct frames from 12/30 to 16/30, but was
+numerically indistinguishable from static ZCA and became mismatched on the
+reserved portion of the nonstationary ten-minute noise run. Warm-started online
+adaptation on each preceding ten-second gap reduced threshold-crossing correct
+frames to 10/30; a full per-gap equilibrium refit also reached only 10/30.
+Thus short-gap adaptation in its current form is unstable, and there is no
+demonstrated neural advantage.
 10% and 1% remained below the recoverable range.
 
 ## Next work
