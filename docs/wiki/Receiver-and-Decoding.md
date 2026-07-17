@@ -43,6 +43,13 @@ frame. Since it converges to symmetric/ZCA whitening, it must be compared with
 ordinary ZCA and cannot be credited with a neural-specific benefit unless it
 adapts better to changing contexts.
 
+Causal VAR, Kalman, GRU, and TCN prediction-error filters are implemented in
+`temporal_whitening.py` and benchmarked by `benchmark_temporal_whitening.py`.
+On the first physical dataset, VAR was the only model to substantially reduce
+held-out temporal correlation, but it also cancelled beacon evidence and
+reduced decoding. GRU and TCN retained decoder accuracy without demonstrating
+held-out temporal whitening. See [Temporal-whitening benchmark](Temporal-Whitening-Benchmark.md).
+
 ## Decoders
 
 - naive-max: independent Manchester hard decisions.

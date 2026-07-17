@@ -28,8 +28,12 @@ reserved portion of the nonstationary ten-minute noise run. Warm-started online
 adaptation on each preceding ten-second gap reduced threshold-crossing correct
 frames to 10/30; a full per-gap equilibrium refit also reached only 10/30.
 Thus short-gap adaptation in its current form is unstable, and there is no
-demonstrated neural advantage.
-10% and 1% remained below the recoverable range.
+demonstrated neural advantage. A subsequent causal benchmark tested VAR(20),
+Kalman, a 16-unit GRU, and a 61-sample TCN. VAR substantially reduced temporal
+noise correlation but cancelled beacon evidence (13/30); Kalman reached 15/30;
+GRU and TCN retained 18/30 but did not reduce held-out temporal correlation.
+Static ZCA remains the simplest best-performing whitening front end. No method
+recovered a 10% or 1% frame. See `Temporal-Whitening-Benchmark.md`.
 
 ## Next work
 

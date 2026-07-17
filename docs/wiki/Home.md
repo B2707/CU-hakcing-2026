@@ -19,7 +19,8 @@ to a Mac receiver at 200 Hz.
 - [Transmitter](Transmitter.md)
 - [Receiver and decoding](Receiver-and-Decoding.md)
 - [Experiments and data](Experiments-and-Data.md)
-- [Latest benchmark](Results-2026-07-16.md)
+- [Latest physical benchmark](Results-2026-07-16.md)
+- [Temporal-whitening benchmark](Temporal-Whitening-Benchmark.md)
 - [Operations and troubleshooting](Operations-and-Troubleshooting.md)
 - [Context handoff](Context-Handoff.md)
 
