@@ -1,6 +1,6 @@
 # Rocko
 
-**Cave Explorer Safety Beacon, built for CU Hacking 2026 (QNX Embedded AI Challenge)**
+**Cave Explorer Safety Beacon — 🏆 First place, QNX stream, CU Hacking 2026**
 
 A cave explorer carries Rocko, a handheld device running on a Raspberry Pi 5
 under QNX 8. It listens for a spoken emergency, classifies it on device with
@@ -21,14 +21,16 @@ spoken. Silence is the alarm.
 **[Watch the demo on YouTube](https://www.youtube.com/watch?v=b3_v2pcWqy0)** —
 wake phrase to on-device classification to a frame decoded at the surface.
 
-## The team at CU Hacking 2026
+## First place at CU Hacking 2026
 
-![The team](docs/images/awards.jpg)
+![First place, QNX stream](docs/images/awards.jpg)
+
+**First place in the QNX stream** — the team at the awards ceremony.
 
 |  |  |
 |---|---|
-| ![Building Rocko](docs/images/building-rocko.jpg) | 
-| **Mid-build**, the live listener log running on the bench monitor | **Awards ceremony**, collecting the hardware |
+| ![Building Rocko](docs/images/building-rocko.jpg) | ![The team](docs/images/team.jpg) |
+| **Mid-build**, the live listener log running on the bench monitor | **The team**, between builds |
 
 ## How it works
 
