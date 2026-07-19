@@ -19,6 +19,7 @@ team.jpg                 the team at CU Hacking 2026 (used in README)
 building-rocko.jpg       mid-build at the bench, listener log on screen (used in README)
 awards.jpg               the awards ceremony (used in README)
 prize-table.jpg          candid at the prize table (spare, not embedded)
+social-preview.jpg       1280x640 card for GitHub Settings, Social preview
 ```
 
 All four are resized to 1600 px and re-encoded (EXIF checked, no GPS data).

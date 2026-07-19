@@ -2,6 +2,9 @@
 
 Long-running beacon daemon that drives the L298N coil through the QNX
 `rpi_gpio` resource manager (`/dev/gpio`). No pigpio, no Linux libraries.
+The field the coil generates crosses the rock and is picked up on the
+surface by a TMR (tunnel magnetoresistance) sensor, a quantum tunneling
+detector, see [`receiver/README.md`](../receiver/README.md).
 
 - **Tone** = 8 Hz square wave made by flipping coil polarity on IN3/IN4
   (62.5 ms per half-cycle) with ENB high. **No tone** = ENB low.
