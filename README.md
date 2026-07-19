@@ -14,7 +14,7 @@ Every few minutes the device also sends a heartbeat, so if the pings stop
 arriving, the surface knows something is wrong even if no emergency was ever
 spoken. Silence is the alarm.
 
-## Demo
+## Demo Video
 
 [![Rocko demo video](https://img.youtube.com/vi/b3_v2pcWqy0/maxresdefault.jpg)](https://www.youtube.com/watch?v=b3_v2pcWqy0)
 
@@ -23,11 +23,11 @@ wake phrase to on-device classification to a frame decoded at the surface.
 
 ## The team at CU Hacking 2026
 
-![The team](docs/images/team.jpg)
+![The team](docs/images/awards.jpg)
 
 |  |  |
 |---|---|
-| ![Building Rocko](docs/images/building-rocko.jpg) | ![Awards ceremony](docs/images/awards.jpg) |
+| ![Building Rocko](docs/images/building-rocko.jpg) | 
 | **Mid-build**, the live listener log running on the bench monitor | **Awards ceremony**, collecting the hardware |
 
 ## How it works
