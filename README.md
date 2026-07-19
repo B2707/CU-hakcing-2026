@@ -62,6 +62,36 @@ zero) goes out automatically every 120 seconds. The full code table lives in
 [`docs/equipment-codes.md`](docs/equipment-codes.md), this is the contract
 between the explorer side and the surface decoder.
 
+The whole loop, from spoken word to surface alarm:
+
+```mermaid
+flowchart TD
+    subgraph EXPLORER [Explorer device, Pi 5 on QNX]
+        STT[USB mic, whisper.cpp] --> GATE{wake phrase<br>hey rocko help?}
+        GATE -->|no, keep listening| STT
+        GATE -->|yes| CLS{classify the speech}
+        CLS -->|fire, trapped, lost, injured| FLAGS[set the matching flags]
+        CLS -->|phrase alone or unclear| SOS[SOS, all four flags]
+        CLS -->|clear all-okay, no distress| CANCEL[cancel pending alert]
+        CANCEL --> STT
+        FLAGS --> TX[coil transmitter<br>3 repeats, 3 s gaps]
+        SOS --> TX
+        TIMER([120 s timer]) --> HB[heartbeat frame, all flags zero]
+        HB --> TX
+    end
+    TX -->|8 Hz Manchester tone, through rock| ADC
+    subgraph SURFACE [Surface station, laptop and Pico]
+        ADC[coil sensor, Pico ADC] --> DEC[bandpass, preamble lock, decode]
+        DEC --> LOG[dashboard, numbered event log]
+        DEC --> WD[watchdog, expects a heartbeat]
+        WD -->|none in time| ALARM[raise the alarm<br>silence is the alarm]
+    end
+```
+
+Two fail-safes are baked into the gate: emergency content always outranks the
+cancel word, and negated or unclear speech is never read as an all clear, it
+falls through to SOS.
+
 ## Quickstart
 
 Explorer device, on the Pi over SSH:
