@@ -173,7 +173,7 @@ built by Mohammad Steitieh.
 ## Tests
 
 ```bash
-python3 -m pip install numpy
+python3 -m pip install numpy scipy
 python3 -m unittest discover -s tests
 ```
 
