@@ -1,6 +1,10 @@
 # Rocko receiver (surface station)
 
-Runs locally on the surface laptop, wired **MDT sensor → Pico → USB serial**.
+Runs locally on the surface laptop, wired **MDT TMR sensor → Pico → USB
+serial**. The MDT part is a TMR (tunnel magnetoresistance) sensor, a quantum
+tunneling detector: electrons cross a nanometer thin insulating barrier
+between two ferromagnetic layers, and the tunneling resistance tracks the
+beacon's magnetic field.
 It captures the coil signal, shows a live dashboard, and decodes the beacon
 frame against the frozen contract in [`ALGORITHM.md`](ALGORITHM.md) and
 `docs/equipment-codes.md`. Silence is the alarm.
