@@ -14,7 +14,8 @@ The unit that goes into the cave: a Raspberry Pi 5 on QNX with a microphone
 and the coil driver.
 
 **Surface station**
-The unit that stays outside: a magnetic sensor, a Pico, a laptop, and the
+The unit that stays outside: a TMR quantum tunneling sensor, a Pico, a
+laptop, and the
 live dashboard.
 
 **Frame**
@@ -41,6 +42,13 @@ class win.
 **Coil link**
 The path: GPIO pins, L298N driver board, coil, through rock, sensor, Pico,
 laptop. One way, slow on purpose, and that is fine for this use case.
+
+**TMR sensor**
+The surface station's magnetic detector, a tunnel magnetoresistance part and
+a genuinely quantum device: electrons tunnel across a nanometer thin
+insulating barrier between two ferromagnetic layers, and the tunneling
+resistance tracks the beacon's field. Single axis, analog, usable from 0 to
+10 Hz, which is why the carrier sits at 8 Hz.
 
 **Tone**
 The 8 Hz beep the coil makes for the "on" half of a Manchester encoded bit.
