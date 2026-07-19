@@ -14,7 +14,7 @@ silence (long enough to span the 3 s inter-repeat gaps but not the 120 s
 heartbeat), decodes the recent window in-process with :mod:`decoder` and marks
 the decode point on the amplitude pane.
 
-The panes start EMPTY — nothing is drawn until real samples arrive.
+The panes start EMPTY - nothing is drawn until real samples arrive.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ from protocol import (
 )
 from serial_source import ReplaySource, SerialSource
 
-# Visual identity — muted, readable, works on a projector.
+# Visual identity - muted, readable, works on a projector.
 COLOR_RAW = "#2563eb"
 COLOR_RAW_2 = "#7c3aed"
 COLOR_BAND = "#0891b2"
@@ -61,8 +61,8 @@ COLOR_PANEL_BG = "#0f172a"
 COLOR_PANEL_FG = "#e2e8f0"
 
 # Reject decodes whose best tilde-preamble correlation (summed over the two ADC
-# channels, so it maxes at 2.0) falls below this absolute floor. Real captures —
-# clean or heavily noised — score ~1.7; pure 8 Hz-band noise tops out near 0.3.
+# channels, so it maxes at 2.0) falls below this absolute floor. Real captures -
+# clean or heavily noised - score ~1.7; pure 8 Hz-band noise tops out near 0.3.
 # Below the floor the envelope tripped on interference, not a beacon: surface it
 # as WARN, never as a confident emergency shown to rescuers.
 MIN_PREAMBLE_CONFIDENCE = 0.8
@@ -150,7 +150,7 @@ class LiveReceiver:
     def _build_figure(self):
         self.fig = plt.figure(figsize=(16, 9.5), facecolor="#f8fafc")
         try:
-            self.fig.canvas.manager.set_window_title("Rocko — cave beacon receiver")
+            self.fig.canvas.manager.set_window_title("Rocko - cave beacon receiver")
         except Exception:  # headless / Agg backend has no window manager
             pass
         # The event panel is operationally as important as the traces: give it
@@ -191,11 +191,11 @@ class LiveReceiver:
         )
 
         self.ax_raw.set_ylabel("Raw ADC")
-        self.ax_raw.set_title("Sensors — raw", loc="left", fontsize=10, color="#334155")
+        self.ax_raw.set_title("Sensors - raw", loc="left", fontsize=10, color="#334155")
         self.ax_raw.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.85)
         self.ax_band.set_ylabel("Bandpass")
         self.ax_band.set_title(
-            f"Sensors — {self.band_label}", loc="left", fontsize=10, color="#334155"
+            f"Sensors - {self.band_label}", loc="left", fontsize=10, color="#334155"
         )
         self.ax_band.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.85)
         self.ax_amp.set_ylabel("Carrier amplitude")
@@ -210,7 +210,7 @@ class LiveReceiver:
             axis.margins(x=0)
 
         self.fig.suptitle(
-            "ROCKO  ·  cave explorer safety beacon — surface receiver",
+            "ROCKO  ·  cave explorer safety beacon - surface receiver",
             fontsize=15, fontweight="bold", x=0.06, ha="left",
         )
         self.status_text = self.ax_side.text(
@@ -298,7 +298,7 @@ class LiveReceiver:
                 self.tone_run += 1 / self.args.sample_rate
                 if self.tone_run >= self.args.tone_confirm:
                     if not self.seen_tone and not self.signal_logged:
-                        self.log.emit("SIGNAL", "carrier detected — recording beacon")
+                        self.log.emit("SIGNAL", "carrier detected - recording beacon")
                         self.signal_logged = True
                     self.seen_tone = True
                 if self.seen_tone:
@@ -313,7 +313,7 @@ class LiveReceiver:
         if self.seen_tone and self.last_tone_time is not None:
             silence = self.current_silence
             self.status_line = (
-                f"Tone captured — silence {silence:.1f}/{self.args.silence:g}s"
+                f"Tone captured - silence {silence:.1f}/{self.args.silence:g}s"
             )
             if silence >= self.args.silence and not self.decode_pending:
                 # A startup transient or short interference burst can satisfy the
@@ -327,7 +327,7 @@ class LiveReceiver:
                 frame_seconds = FRAME_BITS * 2 * HALF_SYMBOL_SECONDS
                 if available < frame_seconds:
                     self.status_line = (
-                        f"Signal ended — buffering full frame "
+                        f"Signal ended - buffering full frame "
                         f"{available:.1f}/{frame_seconds:.1f}s"
                     )
                     return
@@ -337,15 +337,15 @@ class LiveReceiver:
                 if (self.live_frame_start_time is None
                         or self.live_preamble_score < confidence_floor):
                     self.log.emit(
-                        "WARN", "signal ended without a valid tilde preamble — ignored"
+                        "WARN", "signal ended without a valid tilde preamble - ignored"
                     )
-                    self.status_line = "Signal ignored — no valid preamble"
+                    self.status_line = "Signal ignored - no valid preamble"
                     self._reset_after_decode()
                     return
                 frame_age = float(times[-1] - self.live_frame_start_time)
                 if frame_age < frame_seconds:
                     self.status_line = (
-                        f"Preamble locked — receiving frame "
+                        f"Preamble locked - receiving frame "
                         f"{frame_age:.1f}/{frame_seconds:.1f}s"
                     )
                     return
@@ -388,7 +388,7 @@ class LiveReceiver:
             distance=max(1, round(fs * FRAME_BITS / 2)),
         )
         if not len(peaks):
-            self.live_decoder_state = f"SEARCHING — best preamble {best:.2f}/{floor:.2f}"
+            self.live_decoder_state = f"SEARCHING - best preamble {best:.2f}/{floor:.2f}"
             return
 
         candidate = int(peaks[-1])
@@ -449,7 +449,7 @@ class LiveReceiver:
         ys = np.asarray(self.y)
         # Vote only over samples captured since the previous decode. Otherwise a
         # second transmission arriving within the ~90 s plot window is majority-
-        # voted together with the last message's stale frames — blending two
+        # voted together with the last message's stale frames - blending two
         # emergencies or downgrading a real one toward heartbeat.
         if self.last_decode_time is not None:
             fresh = times > self.last_decode_time
@@ -471,10 +471,10 @@ class LiveReceiver:
         if best_score < floor:
             # The envelope tripped on interference/noise, not a real beacon
             # (decode_repeats always returns *some* label). Flag it, draw no
-            # markers — never present noise to rescuers as a decoded emergency.
+            # markers - never present noise to rescuers as a decoded emergency.
             self.log.emit(
                 "WARN",
-                f"low-confidence signal ignored — preamble {best_score:.2f} "
+                f"low-confidence signal ignored - preamble {best_score:.2f} "
                 f"< {floor:.2f} (would read {result.label} {result.code})",
             )
             self.status_line = f"Low-confidence signal ignored ({best_score:.2f})"
@@ -483,7 +483,7 @@ class LiveReceiver:
 
         self.log.emit(
             "DECODE",
-            f"{result.label} ({result.code}) — {result.agreement}",
+            f"{result.label} ({result.code}) - {result.agreement}",
         )
         self.status_line = f"Decoded: {result.label} ({result.code})"
         self._add_decode_markers(result)
@@ -631,7 +631,7 @@ class LiveReceiver:
             for event in events:
                 lines.extend(self._wrap_panel_line(event.compact(), "       "))
         else:
-            lines.extend(self._wrap_panel_line("No events yet — waiting for a real signal."))
+            lines.extend(self._wrap_panel_line("No events yet - waiting for a real signal."))
         self.side_text.set_text("\n".join(lines))
         badge, color = self._status_style()
         self.status_text.set_text(badge)
@@ -688,7 +688,7 @@ class LiveReceiver:
 
     def close(self):
         # Idempotent: close() fires from the window close_event, the
-        # --stop-after-decode path, and the main() finally — often twice in one
+        # --stop-after-decode path, and the main() finally - often twice in one
         # shutdown. Re-running it would emit to an already-closed log handle.
         if self._closed:
             return
@@ -698,7 +698,7 @@ class LiveReceiver:
         if not self.csv.closed:
             self.csv.flush()
             self.csv.close()
-        self.log.emit("CAPTURE", f"stopped — saved {self.output}", echo=True)
+        self.log.emit("CAPTURE", f"stopped - saved {self.output}", echo=True)
         self.log.close()
 
 

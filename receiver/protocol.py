@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocko beacon frame contract — the single source of truth for the receiver.
+"""Rocko beacon frame contract - the single source of truth for the receiver.
 
 This module mirrors the frozen table in ``docs/equipment-codes.md`` and the
 hardening-v2 spec exactly. It is deliberately dependency-light (numpy only) so
@@ -30,7 +30,7 @@ from typing import List, Sequence, Tuple
 
 import numpy as np
 
-# --- Frozen constants (do not change — see module docstring) -----------------
+# --- Frozen constants (do not change - see module docstring) -----------------
 
 PREAMBLE_BITS: Tuple[int, ...] = (0, 1, 1, 1, 1, 1, 1, 0)  # "~" / 0x7e
 FLAG_BITS: int = 4

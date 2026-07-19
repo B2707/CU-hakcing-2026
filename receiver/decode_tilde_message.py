@@ -2,7 +2,7 @@
 """Offline decode of a captured ``t,x,y`` CSV to a Rocko beacon frame.
 
 Thin command-line front end over :mod:`decoder`. The frame layout, timing, and
-Manchester mapping are fixed by the frozen contract in :mod:`protocol` — there
+Manchester mapping are fixed by the frozen contract in :mod:`protocol` - there
 are no ``--message-bits`` style knobs, because the air interface is not
 negotiable. Only the receiver-side DSP parameters (carrier, bandpass width) are
 exposed for tuning against a noisy capture.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocko receiver — one command to launch the whole surface station.
+"""Rocko receiver - one command to launch the whole surface station.
 
     python3 receiver/rocko_receiver.py                 # auto-detect the Pico
     python3 receiver/rocko_receiver.py -p /dev/cu.usbmodem1201
@@ -98,7 +98,7 @@ def main() -> int:
     try:
         app.run()
     except KeyboardInterrupt:
-        print("\n  interrupted — shutting down")
+        print("\n  interrupted - shutting down")
     finally:
         app.close()
     return 0

@@ -2,7 +2,7 @@
 
 The reference decode pipeline, implemented in `decoder.py` and driven by the
 frozen contract in `protocol.py` (mirrors `docs/equipment-codes.md`). A GUI may
-present the results differently but must not change these numbers — the Pi
+present the results differently but must not change these numbers, the Pi
 transmitter depends on the identical contract.
 
 ## Frame contract (frozen)
@@ -121,12 +121,12 @@ for each batch of (t, x, y):
 
 ## 9. Files
 
-- `protocol.py` — frozen constants + flag↔event mapping.
-- `decoder.py` — DSP, decode, repeat voting, synthetic generator.
-- `serial_source.py` — serial + replay sources (only serial code).
-- `eventlog.py` — numbered events (file + on-screen).
-- `live_receiver.py` — live dashboard + detector + in-process decode.
-- `rocko_receiver.py` — one-command launcher.
-- `capture.py` / `plot_receiver.py` / `decode_tilde_message.py` — offline tools.
-- `pico_main.py` — Pico firmware (t,x,y).
-- `../tests/test_receiver.py` — synthetic-waveform decode tests, no hardware.
+- `protocol.py` -- frozen constants + flag↔event mapping.
+- `decoder.py` -- DSP, decode, repeat voting, synthetic generator.
+- `serial_source.py` -- serial + replay sources (only serial code).
+- `eventlog.py` -- numbered events (file + on-screen).
+- `live_receiver.py` -- live dashboard + detector + in-process decode.
+- `rocko_receiver.py` -- one-command launcher.
+- `capture.py` / `plot_receiver.py` / `decode_tilde_message.py` -- offline tools.
+- `pico_main.py` -- Pico firmware (t,x,y).
+- `../tests/test_receiver.py` -- synthetic-waveform decode tests, no hardware.

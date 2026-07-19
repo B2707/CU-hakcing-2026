@@ -1,4 +1,4 @@
-"""Receiver decoder tests — decode synthetic beacon waveforms, no hardware.
+"""Receiver decoder tests - decode synthetic beacon waveforms, no hardware.
 
 Every test synthesizes a real OOK/Manchester ``t,x,y`` waveform with
 ``decoder.synthesize_capture`` and runs the full decode pipeline. Nothing here
@@ -223,7 +223,7 @@ class EventLogRobustnessTests(unittest.TestCase):
             log.close()
             log.close()  # idempotent second close (mirrors double-shutdown paths)
             # Writing to the now-closed handle must be swallowed, not crash.
-            event = log.emit("CAPTURE", "stopped — saved capture", echo=False)
+            event = log.emit("CAPTURE", "stopped - saved capture", echo=False)
             self.assertEqual(event.kind, "CAPTURE")
             self.assertEqual(event.number, 2)
 

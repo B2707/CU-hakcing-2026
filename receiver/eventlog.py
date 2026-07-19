@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocko receiver event log — monotonic numbers, timestamps, file + on-screen.
+"""Rocko receiver event log - monotonic numbers, timestamps, file + on-screen.
 
 Every notable receiver event (capture start, tone observed, decoded emergency,
 error) becomes a numbered line ``[#0001] 2026-07-12T14:03:11 DECODE  fire

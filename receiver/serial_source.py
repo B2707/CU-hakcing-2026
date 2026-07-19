@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sample sources for the Rocko receiver — serial (real) and CSV replay.
+"""Sample sources for the Rocko receiver - serial (real) and CSV replay.
 
 This is the ONLY module that touches the USB serial port, kept deliberately
 separate from :mod:`decoder` so the decode pipeline and its unit tests never
@@ -8,7 +8,7 @@ need the Pico. Both sources are background threads that push validated
 
 The Pico firmware (``receiver/pico_main.py``) emits ASCII ``t,x,y`` lines at
 115200 baud, ~200 Hz. ``ReplaySource`` re-streams a previously recorded CSV at
-its original timing so the receiver can be demoed with no hardware attached —
+its original timing so the receiver can be demoed with no hardware attached -
 it replays *real* recordings, never synthetic filler.
 """
 

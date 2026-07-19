@@ -1,4 +1,4 @@
-# Rocko receiver — Pico ADC streamer (MicroPython). Copy onto the Pico as main.py.
+# Rocko receiver - Pico ADC streamer (MicroPython). Copy onto the Pico as main.py.
 #
 # Emits the exact "t,x,y" line format the surface receiver expects:
 #
@@ -21,7 +21,7 @@ import time
 
 adc_x = ADC(26)                     # GP26 = ADC0  (sensor 1 / X)
 adc_y = ADC(27)                     # GP27 = ADC1  (sensor 2 / Y)
-RATE = 200                          # samples/sec — must match the receiver
+RATE = 200                          # samples/sec - must match the receiver
 PERIOD_US = 1_000_000 // RATE
 
 print("t,x,y")                      # header line (receiver skips non-numeric rows)

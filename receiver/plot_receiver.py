@@ -71,7 +71,7 @@ def main():
         axis.margins(x=0)
 
     fig.suptitle(
-        f"Rocko capture — {len(t):,} samples @ {fs:.1f} Hz   "
+        f"Rocko capture - {len(t):,} samples @ {fs:.1f} Hz   "
         f"decoded: {result.label} ({result.code}), {result.agreement}",
         fontsize=13, fontweight="bold",
     )

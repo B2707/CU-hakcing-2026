@@ -18,8 +18,8 @@ python3 receiver/rocko_receiver.py            # auto-detects the Pico serial por
 - No hardware? Replay a real recording: `python3 receiver/rocko_receiver.py --replay captures/trial.csv`
 - One `Ctrl+C` (or closing the window) stops everything and flushes the capture.
 
-The dashboard shows three panes — **both sensors raw**, **both sensors at the
-8 Hz bandpass**, and **combined carrier amplitude + adaptive tone threshold** —
+The dashboard shows three panes, **both sensors raw**, **both sensors at the
+8 Hz bandpass**, and **combined carrier amplitude + adaptive tone threshold**,
 plus an expanded numbered event panel with receiver health, sample count,
 threshold and signal state. The live decoder locks the tilde preamble, then
 prints each flag decision with its Manchester-0 and Manchester-1 correlation
@@ -53,8 +53,8 @@ Copy [`pico_main.py`](pico_main.py) onto the Pico as `main.py`. It streams the
 |---|---|---|---|
 | GP26 | ADC0 | sensor 1 (`x`) | 0–3.3 V only |
 | GP27 | ADC1 | sensor 2 (`y`) | tie to GND for a one-channel front-end |
-| GND | — | sensor ground | shared |
-| USB | — | — | to the laptop, 115200 baud |
+| GND | -- | sensor ground | shared |
+| USB | -- | -- | to the laptop, 115200 baud |
 
 ## The frame it decodes (frozen contract)
 
@@ -88,15 +88,15 @@ python3 receiver/decode_tilde_message.py captures/trial.csv
 
 ## Layout
 
-- `rocko_receiver.py` — the one-command launcher (port auto-detect, banner).
-- `live_receiver.py` — live dashboard + causal tone detector + in-process decode.
-- `decoder.py` — pure DSP + decode + synthetic waveform generator (no hardware).
-- `protocol.py` — frozen frame constants and flag↔event mapping.
-- `serial_source.py` — serial + CSV-replay sources (the only serial code).
-- `eventlog.py` — numbered event log (file + on-screen).
-- `capture.py` / `plot_receiver.py` / `decode_tilde_message.py` — offline tools.
-- `pico_main.py` — MicroPython firmware for the Pico.
-- `../tests/test_receiver.py` — decode synthetic waveforms, zero hardware.
+- `rocko_receiver.py` -- the one-command launcher (port auto-detect, banner).
+- `live_receiver.py` -- live dashboard + causal tone detector + in-process decode.
+- `decoder.py` -- pure DSP + decode + synthetic waveform generator (no hardware).
+- `protocol.py` -- frozen frame constants and flag↔event mapping.
+- `serial_source.py` -- serial + CSV-replay sources (the only serial code).
+- `eventlog.py` -- numbered event log (file + on-screen).
+- `capture.py` / `plot_receiver.py` / `decode_tilde_message.py` -- offline tools.
+- `pico_main.py` -- MicroPython firmware for the Pico.
+- `../tests/test_receiver.py` -- decode synthetic waveforms, zero hardware.
 
 ## Tests
 

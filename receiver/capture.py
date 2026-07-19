@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-capture.py — capture receiver serial output to a CSV file.
+capture.py - capture receiver serial output to a CSV file.
 
 The Pico 2W receiver prints one line per sample:
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocko beacon decoder — pure DSP, no serial or GUI.
+"""Rocko beacon decoder - pure DSP, no serial or GUI.
 
 This module turns a captured ``t,x,y`` waveform into a decoded beacon frame
 using the frozen contract in :mod:`protocol`:
@@ -231,7 +231,7 @@ def consensus_flags(frames: Sequence[DecodedFrame]) -> Tuple[int, ...]:
 
     Per bit the value with the most votes wins. An *even* split (e.g. only two
     votable frames that disagree) is broken toward the stronger accumulated
-    soft evidence — the summed ``(score0, score1)`` correlation across frames —
+    soft evidence - the summed ``(score0, score1)`` correlation across frames -
     never by ``round``. ``round`` is round-half-to-even, so an even tie collapses
     every tied bit to 0 and can manufacture a code (``0000``) matching *no*
     decoded frame.
@@ -240,7 +240,7 @@ def consensus_flags(frames: Sequence[DecodedFrame]) -> Tuple[int, ...]:
     frame independently decoded ``0000``. If the vote lands on heartbeat while any
     frame carried an emergency bit, the best-synced frame (highest preamble
     score) wins instead. Rationale: a false emergency is a survivable false
-    alarm, but a false heartbeat suppresses the "silence is the alarm" response —
+    alarm, but a false heartbeat suppresses the "silence is the alarm" response -
     the worst possible failure of this device.
     """
     if not frames:
@@ -263,7 +263,7 @@ def consensus_flags(frames: Sequence[DecodedFrame]) -> Tuple[int, ...]:
             consensus.append(1)
         elif zeros > ones:
             consensus.append(0)
-        else:  # even split — trust the stronger correlation, never round()
+        else:  # even split - trust the stronger correlation, never round()
             consensus.append(int(score1[bit] > score0[bit]))
     result = tuple(consensus)
 
